@@ -1,0 +1,823 @@
+<USER_REQUEST>
+PHASE 25 — PRODUCTION MATCHING & ASSIGNMENT WORKFLOW
+
+IMPORTANT:
+Phase 24 AI Intelligence Engine is COMPLETE and has passed LIVE E2E verification.
+
+DO NOT rewrite, replace, refactor, or weaken the Phase 24 Gemini implementation.
+
+Phase 24 verified:
+- Gemini 3.8 Flash
+- Google Search grounding
+- multimodal image analysis
+- 2-call maximum
+- existing-solution discovery
+- citizen solution rejection + gap validation
+- AI categorization
+- deterministic university matching
+- deterministic industry matching
+- Supabase persistence
+- authentication regression
+- matching regression
+- frontend build
+- frontend lint
+
+Your task is now to implement PHASE 25 only.
+
+==================================================
+1. PHASE 25 OBJECTIVE
+==================================================
+
+Make the matching system a real production workflow.
+
+The goal is:
+
+VALIDATED CHALLENGE
+        ↓
+Deterministic University Matching
+        ↓
+Top ≤ 5 meaningful universities
+        ↓
+University Admin / SPOC receives invitation
+        ↓
+University Admin ACCEPTS or REJECTS
+        ↓
+Acceptance deadline
+        ↓
+Highest-ranked eligible accepting university
+        ↓
+FINAL UNIVERSITY ASSIGNMENT
+        ↓
+Faculty / Students can work on the challenge
+        ↓
+Deterministic Industry Matching
+        ↓
+Top ≤ 5 meaningful industries
+        ↓
+Industry SPOC receives collaboration request
+        ↓
+Industry SPOC ACCEPTS / REJECTS
+        ↓
+Industry collaboration becomes available
+        ↓
+Industry employees can EXPRESS INTEREST
+        ↓
+Industry SPOC later selects employees
+
+IMPORTANT:
+Do NOT implement the complete project/milestone/feedback lifecycle in this phase.
+That belongs to later phases.
+
+==================================================
+2. FIRST STEP — AUDIT CURRENT IMPLEMENTATION
+==================================================
+
+Before modifying code:
+
+1. Inspect the current Phase 24 implementation.
+2. Inspect:
+   - matching_engine.py
+   - matching_service.py
+   - university_workflow_service.py
+   - industry_workflow_service.py
+   - project_workflow_service.py
+   - challenge_service.py
+   - relevant routes
+   - relevant schemas
+   - relevant frontend pages
+3. Inspect the actual current Supabase schema.
+4. Determine which parts of Phase 25 already exist.
+5. Do NOT duplicate existing functionality.
+
+Do not start another implementation plan after this prompt.
+Proceed directly with the implementation after the audit.
+
+==================================================
+3. DATABASE RULE — VERY IMPORTANT
+==================================================
+
+DO NOT modify the Supabase schema in Phase 25.
+
+DO NOT:
+- create new tables
+- drop tables
+- recreate tables
+- add columns
+- remove columns
+- modify RLS
+- disable RLS
+- alter authentication
+- recreate existing data
+
+Use the existing schema exactly as it currently exists.
+
+Existing relevant tables include:
+
+challenge_university_matches
+challenge_industry_matches
+universities
+industries
+university_admins
+industry_employees
+projects
+project_members
+profiles
+project_employee_interests
+challenges
+
+Use the existing fields/status values.
+
+If a requirement cannot be implemented without a schema change, STOP and report the exact limitation instead of silently changing the schema.
+
+==================================================
+4. UNIVERSITY MATCHING WORKFLOW
+==================================================
+
+For a validated challenge:
+
+1. Generate university matches using the existing deterministic matching engine.
+2. Use LIVE records from Supabase.
+3. Never use hardcoded universities.
+4. Never invent university IDs.
+5. Validate every selected university ID against the database.
+6. Persist only real university IDs.
+
+Use the existing Phase 24 university weights:
+
+- Skills: 25%
+- Technologies: 25%
+- Research Areas: 15%
+- Domain: 10%
+- Primary Focus: 10%
+- Departments: 5%
+- Facilities: 3%
+- Past Projects: 2%
+
+Return at most 5 meaningful matches.
+
+DO NOT force 5 matches.
+
+If only 2 universities are genuinely relevant:
+→ return 2.
+
+If none are meaningfully relevant:
+→ return none.
+
+Do not lower the threshold just to fill five slots.
+
+==================================================
+5. UNIVERSITY RANKING
+==================================================
+
+Every university match must contain:
+
+- university_id
+- rank
+- match_score
+- match_reason
+- status
+
+The backend owns:
+- university identity
+- score
+- ranking
+- eligibility
+- state transitions
+
+The frontend must NOT calculate or override these values.
+
+Ranking must be deterministic.
+
+Given the same challenge and same university data:
+→ the ranking should remain consistent.
+
+==================================================
+6. UNIVERSITY ADMIN / SPOC AUTHORIZATION
+==================================================
+
+Only an authorized university representative may respond to a university challenge invitation.
+
+A valid university responder must have:
+
+- authenticated Supabase user
+- valid JWT
+- profile role = university_admin
+- verified university_admin record
+- active/verified status
+- association with the university receiving the challenge
+
+Do NOT trust:
+- frontend role values
+- submitted university_id
+- designation text
+- client-side permissions
+
+The backend must derive authorization from the authenticated user and database.
+
+A university admin from University A must NOT be able to accept/reject a challenge invitation belonging to University B.
+
+==================================================
+7. UNIVERSITY ACCEPT / REJECT
+==================================================
+
+Implement the real backend workflow for university responses.
+
+University Admin/SPOC should be able to:
+
+ACCEPT
+or
+REJECT
+
+an invitation that belongs to their university.
+
+On ACCEPT:
+- update the corresponding challenge_university_matches record using the existing status model
+- record responder identity
+- record response timestamp
+- optionally store response note if supported by the existing schema
+
+On REJECT:
+- update the corresponding match
+- record responder identity
+- record response timestamp
+- optionally store response note
+
+Do not allow:
+- unauthorized response
+- response to another university's match
+- response to an already finalized/not-selected/expired match
+- duplicate contradictory responses
+- frontend-only state changes
+
+All state transitions must happen server-side.
+
+==================================================
+8. UNIVERSITY ACCEPTANCE DEADLINE
+==================================================
+
+Use the existing response_deadline field in:
+
+challenge_university_matches
+
+Do NOT add another deadline field.
+
+The backend must enforce the deadline.
+
+If:
+current time > response_deadline
+
+then the university must not be able to accept/reject the invitation if the workflow considers it expired.
+
+The frontend display is informational only.
+
+Never trust a client-provided deadline.
+
+The backend must determine expiry using server-side time.
+
+Do not allow the frontend to extend the deadline.
+
+==================================================
+9. FINAL UNIVERSITY SELECTION
+==================================================
+
+This is one of the most important Phase 25 rules.
+
+A challenge can have multiple recommended universities.
+
+Example:
+
+Rank 1 → University A → ACCEPT
+Rank 2 → University B → ACCEPT
+Rank 3 → University C → ACCEPT
+
+The final university must be:
+
+THE HIGHEST-RANKED ELIGIBLE UNIVERSITY THAT ACCEPTED.
+
+Therefore:
+
+Rank 1 accepting → selected
+Rank 2 accepting → not_selected
+Rank 3 accepting → not_selected
+
+If Rank 1 rejects but Rank 2 accepts:
+→ Rank 2 becomes selected.
+
+If Rank 1 expires and Rank 2 accepts:
+→ Rank 2 can become selected.
+
+If all universities reject/expire:
+→ no university is assigned.
+
+Do NOT select a university based on:
+- who responded first
+- random choice
+- frontend order
+- match score recalculation
+- manual client input
+
+Selection must be deterministic based on:
+1. valid acceptance
+2. rank
+
+==================================================
+10. RACE CONDITION / DOUBLE ASSIGNMENT
+==================================================
+
+Protect the final university assignment against two university admins responding around the same time.
+
+The backend must ensure:
+
+ONE challenge
+→ ONE final university assignment.
+
+Do not rely only on frontend disabling buttons.
+
+If the current architecture supports transactional/atomic database operations, use them.
+
+If it does not, implement the safest server-side approach possible without changing the database schema.
+
+Never allow:
+
+Challenge X
+→ University A selected
+AND
+→ University B selected
+
+at the same time.
+
+==================================================
+11. PROJECT RECORD
+==================================================
+
+If the existing project workflow already creates the initial project record when a university is finally assigned, integrate with it.
+
+Do NOT create duplicate projects.
+
+A challenge must not accidentally produce multiple project records because multiple universities accepted.
+
+The final assigned university must correspond to the project university_id.
+
+If project creation is not currently part of the existing workflow, DO NOT expand Phase 25 unnecessarily.
+Report it as the next-phase integration point.
+
+==================================================
+12. INDUSTRY MATCHING
+==================================================
+
+After a university is selected / the challenge reaches the appropriate existing workflow state:
+
+Generate deterministic industry matches using LIVE Supabase records.
+
+Use the existing Phase 24 industry weights:
+
+- Skills: 22%
+- Technologies: 22%
+- Domain: 15%
+- Deployment Capabilities: 12%
+- Resource Capabilities: 10%
+- Products/Services: 8%
+- Geography: 5%
+- CSR Areas: 3%
+- Past Projects: 3%
+
+Use only real industries from:
+
+industries
+
+Never hardcode industry names.
+
+Never invent industry IDs.
+
+Return at most 5 meaningful matches.
+
+Do not force 5.
+
+==================================================
+13. INDUSTRY SPOC AUTHORIZATION
+==================================================
+
+Only a properly authorized Industry SPOC may respond to an industry collaboration request.
+
+Valid requirements:
+
+- authenticated Supabase user
+- valid JWT
+- profile role = industry_employee
+- verified/active industry employee record
+- approval_authority = TRUE
+- employee belongs to the target industry
+
+A normal industry employee must NOT be able to accept/reject the industry's collaboration request.
+
+The backend must verify all of this.
+
+Never trust:
+- frontend role
+- designation string
+- submitted industry_id
+- approval_authority sent by frontend
+
+==================================================
+14. INDUSTRY ACCEPT / REJECT
+==================================================
+
+Implement the backend workflow for Industry SPOC decisions.
+
+Industry SPOC can:
+
+ACCEPT
+or
+REJECT
+
+the industry's collaboration request.
+
+Use the existing:
+
+challenge_industry_matches
+
+table and its existing status model.
+
+Record responder and timestamp using existing fields.
+
+Do not allow unauthorized or duplicate contradictory decisions.
+
+==================================================
+15. IMPORTANT INDUSTRY EMPLOYEE RULE
+==================================================
+
+DO NOT confuse:
+
+Industry SPOC acceptance
+
+with
+
+Employee interest.
+
+These are TWO DIFFERENT actions.
+
+Workflow:
+
+Industry
+   ↓
+Industry SPOC accepts collaboration
+   ↓
+Industry employees see the project/challenge
+   ↓
+Employee clicks EXPRESS INTEREST
+   ↓
+Employee can provide a message
+   ↓
+Industry SPOC reviews interested employees
+   ↓
+SPOC selects employee(s)
+
+A normal employee does NOT accept the industry challenge.
+
+They only express interest.
+
+Use the existing:
+
+project_employee_interests
+
+table.
+
+Use its existing statuses:
+
+- interested
+- selected
+- not_selected
+- withdrawn
+
+Do not create a new employee-selection table.
+
+==================================================
+16. EMPLOYEE AUTHORIZATION
+==================================================
+
+An employee may express interest only if:
+
+- authenticated
+- profile.role = industry_employee
+- employee record is verified/active
+- employee belongs to the industry associated with the project
+
+An employee from another industry must not be able to express interest.
+
+An employee must not be able to create duplicate interest records.
+
+Use the existing unique constraint:
+
+(project_id, employee_id)
+
+where applicable.
+
+==================================================
+17. FRONTEND WORKFLOW
+==================================================
+
+Update the frontend so users can actually see the workflow.
+
+CITIZEN:
+
+After challenge validation:
+- show matching status
+- show matched universities
+- show rank
+- show match score
+- show match reason
+- show acceptance status where appropriate
+- show final university when assigned
+
+UNIVERSITY ADMIN:
+
+Provide a real challenge invitation/response view.
+
+Show:
+- challenge title
+- description
+- location
+- AI category
+- required skills
+- required technologies
+- match score
+- match reason
+- response deadline
+- ACCEPT
+- REJECT
+
+Do not expose actions to unauthorized users.
+
+After responding:
+- immediately reflect server state
+- prevent duplicate response
+- show whether university was selected/not selected/expired
+
+INDUSTRY SPOC:
+
+Show:
+- challenge/project
+- industry match score
+- match reason
+- ACCEPT
+- REJECT
+
+INDUSTRY EMPLOYEE:
+
+After industry collaboration is accepted:
+- show eligible projects
+- show EXPRESS INTEREST
+- allow optional interest message
+- show current interest status
+
+Do not give normal employees an ACCEPT/REJECT challenge button.
+
+==================================================
+18. API DESIGN
+==================================================
+
+Follow the existing FastAPI architecture.
+
+Use:
+- existing auth dependency
+- existing service layer
+- existing Pydantic schemas
+- existing API client pattern
+- existing error handling conventions
+
+Do not introduce a second API architecture.
+
+All protected endpoints must require authentication.
+
+Authorization must be server-side.
+
+Use appropriate HTTP errors:
+- 401 unauthenticated
+- 403 unauthorized
+- 404 resource not found / inaccessible
+- 409 invalid state/conflict
+- 422 validation error
+
+Do not leak sensitive information through error messages.
+
+==================================================
+19. SECURITY
+==================================================
+
+Do not weaken any existing security.
+
+Never expose:
+
+SUPABASE_SECRET_KEY
+GEMINI_API_KEY
+
+to frontend code.
+
+Never put secrets in:
+- React source
+- VITE_ environment variables
+- browser localStorage
+- API responses
+- logs
+- Git
+
+Continue using backend-only secret credentials.
+
+Do not bypass RLS from the frontend.
+
+Do not create privileged frontend database operations.
+
+==================================================
+20. PHASE 24 PROTECTION
+==================================================
+
+Do NOT change the Phase 24 AI workflow unless absolutely necessary for Phase 25 integration.
+
+Especially do not break:
+
+- maximum 2 Gemini calls
+- Google Search grounding
+- search fallback
+- image verification
+- structured Pydantic output
+- solution discovery
+- citizen gap validation
+- AI classification
+- duplicate detection
+- deterministic matching
+
+No new LLM calls are needed for Phase 25.
+
+Matching is deterministic.
+
+Workflow authorization is deterministic.
+
+Acceptance and selection are deterministic.
+
+==================================================
+21. TESTS
+==================================================
+
+Create/update tests for the following.
+
+UNIVERSITY:
+
+1. Valid university admin can accept own invitation.
+2. Valid university admin can reject own invitation.
+3. University Admin A cannot respond to University B's invitation.
+4. Unauthenticated user cannot respond.
+5. Unverified university admin cannot respond.
+6. Response after deadline is rejected.
+7. Duplicate response is blocked.
+8. Highest-ranked accepting university becomes selected.
+9. Lower-ranked accepting university becomes not_selected.
+10. Rank 1 rejection allows Rank 2 acceptance.
+11. All rejected/expired results in no final university.
+12. Two simultaneous acceptance attempts cannot create two selected universities.
+
+INDUSTRY:
+
+13. Valid Industry SPOC can accept own industry request.
+14. Valid Industry SPOC can reject own industry request.
+15. Normal employee cannot accept/reject industry collaboration.
+16. SPOC from another industry cannot respond.
+17. Unverified employee cannot respond.
+18. Employee can express interest only for their own industry.
+19. Duplicate employee interest is blocked.
+20. Industry matching uses live DB data.
+21. Fake industry IDs are rejected.
+
+MATCHING:
+
+22. University matching uses live DB data.
+23. Industry matching uses live DB data.
+24. Matching never invents IDs.
+25. At most 5 meaningful university matches.
+26. At most 5 meaningful industry matches.
+27. Ranking is deterministic.
+28. Existing Phase 24 matching tests still pass.
+
+REGRESSION:
+
+29. Phase 23 authentication tests pass.
+30. Phase 24 AI tests pass.
+31. Frontend build passes.
+32. Frontend lint passes.
+
+==================================================
+22. DO NOT OVERBUILD
+==================================================
+
+Phase 25 is NOT:
+
+- complete project management
+- milestone management
+- student team formation
+- faculty assignment UI
+- prototype tracking
+- pilot tracking
+- deployment tracking
+- feedback system
+- government monitoring dashboard
+- advanced analytics
+
+Those belong to later phases.
+
+Implement only the matching, acceptance, selection, and industry-interest foundation required now.
+
+==================================================
+23. FINAL VERIFICATION
+==================================================
+
+After implementation:
+
+Run all relevant backend tests.
+
+Run:
+- Phase 23 auth regression
+- Phase 24 AI regression
+- Phase 24 matching regression
+- Phase 25 tests
+
+Then:
+- frontend build
+- frontend lint
+
+Then perform a LIVE E2E workflow using the running application.
+
+Use a real citizen challenge that reaches the validated state.
+
+Verify:
+
+Citizen
+ ↓
+Validated challenge
+ ↓
+University matches
+ ↓
+University Admin sees invitation
+ ↓
+University Admin accepts
+ ↓
+Correct highest-ranked accepting university selected
+ ↓
+Industry matching
+ ↓
+Industry SPOC sees request
+ ↓
+Industry SPOC accepts
+ ↓
+Eligible industry employee sees opportunity
+ ↓
+Employee expresses interest
+
+Verify actual Supabase persistence after each important step.
+
+==================================================
+24. FINAL REPORT
+==================================================
+
+At the end provide:
+
+PHASE 25 IMPLEMENTATION RESULT
+
+- Existing matching preserved: PASS/FAIL
+- University matching: PASS/FAIL
+- University admin authorization: PASS/FAIL
+- University accept/reject: PASS/FAIL
+- Deadline enforcement: PASS/FAIL
+- Final university selection: PASS/FAIL
+- Single-assignment protection: PASS/FAIL
+- Industry matching: PASS/FAIL
+- Industry SPOC authorization: PASS/FAIL
+- Industry accept/reject: PASS/FAIL
+- Employee authorization: PASS/FAIL
+- Employee express-interest: PASS/FAIL
+- Supabase persistence: PASS/FAIL
+- Phase 23 regression: PASS/FAIL
+- Phase 24 regression: PASS/FAIL
+- Phase 25 tests: PASS/FAIL
+- Frontend build: PASS/FAIL
+- Frontend lint: PASS/FAIL
+- Live E2E: PASS/FAIL
+
+Then clearly state one of:
+
+PHASE 25 COMPLETE
+
+or
+
+PHASE 25 BLOCKED — [exact reason]
+
+IMPORTANT:
+Do not claim Phase 25 COMPLETE based only on unit tests.
+The real browser → FastAPI → Supabase workflow must be verified.
+
+Do not modify Supabase schema or RLS.
+Do not expose secrets.
+Do not rewrite Phase 24.
+Do not start another implementation plan.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-11T05:45:22+05:30.
+</ADDITIONAL_METADATA>

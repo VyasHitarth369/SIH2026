@@ -1,0 +1,138 @@
+/* ===================== SamadhanSetu Design Tokens ===================== */
+:root{
+  /* Core palette */
+  --ink:#0B1220;            /* deep navy - sidebar, footer, dark surfaces */
+  --ink-soft:#16213A;
+
+  --primary:#1E4FD8;        /* bridge blue - primary actions/links */
+  --primary-dark:#15399E;
+  --primary-soft:#E7EEFE;
+
+  --teal:#0E9C8F;           /* resolved / success */
+  --teal-dark:#0A7A70;
+  --teal-soft:#DFF6F3;
+
+  --amber:#EC9B1D;          /* pending / medium priority */
+  --amber-soft:#FCEFDA;
+
+  --coral:#E1435C;          /* urgent / reject / high priority */
+  --coral-soft:#FBE3E8;
+
+  --violet:#7657F0;         /* university / academic accent */
+  --violet-soft:#EEE9FE;
+
+  --bg:#F5F7FB;
+  --surface:#FFFFFF;
+  --border:#E2E7F0;
+  --text:#101828;
+  --text-muted:#5B6472;
+  --text-faint:#8891A0;
+
+  --radius-sm:8px;
+  --radius-md:14px;
+  --radius-lg:20px;
+  --shadow-sm:0 1px 2px rgba(16,24,40,0.06);
+  --shadow-md:0 8px 24px -8px rgba(16,24,40,0.16);
+  --shadow-lg:0 20px 40px -12px rgba(16,24,40,0.22);
+
+  --font-ui:'Plus Jakarta Sans','Noto Sans Devanagari',system-ui,sans-serif;
+  --sidebar-w:260px;
+  --topbar-h:68px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{height:100%}
+body{
+  font-family:var(--font-ui);
+  background:var(--bg);
+  color:var(--text);
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer;border:0;outline:none;background:none}
+a{color:inherit;text-decoration:none}
+img,video{max-width:100%;display:block}
+:focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-radius:4px}
+
+.container{max-width:1240px;margin:0 auto;padding:0 20px}
+
+/* ---- Buttons ---- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:11px 20px;border-radius:10px;font-weight:700;font-size:14px;
+  transition:transform .15s ease, box-shadow .15s ease, background .15s ease;
+  white-space:nowrap;
+}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover{background:var(--primary-dark)}
+.btn-success{background:var(--teal);color:#fff}
+.btn-success:hover{background:var(--teal-dark)}
+.btn-danger{background:var(--coral);color:#fff}
+.btn-danger:hover{filter:brightness(0.92)}
+.btn-light{background:var(--bg);color:var(--text);border:1px solid var(--border)}
+.btn-light:hover{background:#eef1f6}
+.btn-block{width:100%}
+.btn-sm{padding:7px 14px;font-size:12.5px;border-radius:8px}
+.btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
+
+/* ---- Card ---- */
+.card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius-md);padding:20px;box-shadow:var(--shadow-sm);
+  margin-bottom:18px;
+}
+
+/* ---- Badge ---- */
+.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;font-size:12px;font-weight:700}
+.badge-blue{background:var(--primary-soft);color:var(--primary-dark)}
+.badge-teal{background:var(--teal-soft);color:var(--teal-dark)}
+.badge-amber{background:var(--amber-soft);color:#93590E}
+.badge-coral{background:var(--coral-soft);color:#A32340}
+.badge-violet{background:var(--violet-soft);color:#4E36B8}
+
+/* ---- Form fields ---- */
+.field{margin-bottom:16px}
+.field label{display:block;font-weight:600;font-size:13px;margin-bottom:6px;color:var(--text)}
+.field .hint{font-size:12px;color:var(--text-muted);margin-top:4px}
+.field input[type=text],
+.field input[type=email],
+.field input[type=password],
+.field textarea,
+.field select{
+  width:100%;padding:11px 14px;border:1px solid var(--border);border-radius:10px;
+  outline:none;font-size:14px;background:var(--surface);transition:border-color .15s;
+}
+.field input:focus,.field textarea:focus,.field select:focus{border-color:var(--primary)}
+.field textarea{min-height:100px;resize:vertical}
+
+/* ---- Page head ---- */
+.page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.page-head h1{font-size:22px;font-weight:800;color:var(--ink)}
+.page-head p{color:var(--text-muted);font-size:14px;margin-top:4px}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:16px}
+
+/* ---- Filter tabs ---- */
+.filter-tabs{display:flex;gap:8px;flex-wrap:wrap}
+.filter-tab{padding:8px 16px;border-radius:8px;background:var(--bg);border:1px solid var(--border);color:var(--text-muted);font-weight:700;font-size:13px}
+.filter-tab.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+/* ---- Toast ---- */
+.toast{
+  position:fixed;bottom:22px;right:22px;left:auto;max-width:calc(100% - 44px);
+  background:var(--ink);color:#fff;padding:14px 20px;border-radius:12px;
+  font-weight:600;font-size:14px;box-shadow:var(--shadow-lg);z-index:1000;
+  animation:toast-in .25s ease;
+}
+@keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+/* ---- Scrollbar (subtle) ---- */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#d5dbe6;border-radius:8px}
+
+@media (max-width:640px){
+  .page-head h1{font-size:19px}
+  .btn{padding:10px 16px;font-size:13.5px}
+}
