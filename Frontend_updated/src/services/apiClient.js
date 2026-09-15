@@ -1,6 +1,8 @@
 import { supabase } from './supabaseClient';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+const rawBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+const strippedBaseUrl = rawBaseUrl.replace(/\/+$/, '');
+const API_BASE_URL = strippedBaseUrl.endsWith('/api') ? strippedBaseUrl : `${strippedBaseUrl}/api`;
 
 /**
  * Universal API Client for Samadhan Setu / Concordia.
