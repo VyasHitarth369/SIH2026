@@ -7,6 +7,7 @@ export function getNavItems(user, t, lang = 'en') {
     case 'citizen':
       items = [
         { to: '/citizen/problems', label: lang === 'hi' ? '🔎 मेरी समस्याएं' : '🔎 My Problems' },
+        { to: '/citizen/all-problems', label: lang === 'hi' ? '🌐 सभी समस्याएं' : '🌐 All Problems' },
         { to: '/citizen/add-problem', label: lang === 'hi' ? '➕ नई समस्या दर्ज करें' : '➕ Submit New Problem' },
         { to: '/profile', label: lang === 'hi' ? '👤 मेरी प्रोफ़ाइल' : '👤 Profile' },
       ];
@@ -14,7 +15,10 @@ export function getNavItems(user, t, lang = 'en') {
 
     case 'student':
       items = [
-        { to: '/student/projects', label: lang === 'hi' ? '📁 मेरे प्रोजेक्ट्स' : '📁 My Projects' },
+        { to: '/student/projects', label: lang === 'hi' ? '📂 नए प्रोजेक्ट्स' : '📂 New Projects' },
+        { to: '/student/university-problems', label: lang === 'hi' ? '🏫 विश्वविद्यालय में चल रही समस्याएं' : '🏫 Ongoing Problems in University' },
+        { to: '/student/my-projects', label: lang === 'hi' ? '📁 मेरा प्रोजेक्ट' : '📁 My Project' },
+        { to: '/student/certificate', label: lang === 'hi' ? '🎓 प्रमाणपत्र' : '🎓 Certificate' },
         { to: '/leaderboard', label: lang === 'hi' ? '🏆 लीडरबोर्ड' : '🏆 Leaderboard' },
         { to: '/profile', label: lang === 'hi' ? '👤 मेरी प्रोफ़ाइल' : '👤 Profile' },
       ];
@@ -24,6 +28,7 @@ export function getNavItems(user, t, lang = 'en') {
       items = [
         { to: '/faculty/projects', label: lang === 'hi' ? '📁 मेरे प्रोजेक्ट्स' : '📁 My Projects' },
         { to: '/faculty/university-problems', label: lang === 'hi' ? '🏫 विश्वविद्यालय समस्याएं' : '🏫 University Problems' },
+        { to: '/leaderboard', label: lang === 'hi' ? '🏆 लीडरबोर्ड' : '🏆 Leaderboard' },
         { to: '/profile', label: lang === 'hi' ? '👤 मेरी प्रोफ़ाइल' : '👤 Profile' },
       ];
       break;
@@ -32,8 +37,10 @@ export function getNavItems(user, t, lang = 'en') {
     case 'university-admin':
       items = [
         { to: '/university-admin/dashboard', label: lang === 'hi' ? '📊 डैशबोर्ड' : '📊 Dashboard' },
-        { to: '/university-admin/problems', label: lang === 'hi' ? '📥 प्राप्त समस्याएं' : '📥 Incoming Problems' },
+        { to: '/university-admin/problems', label: lang === 'hi' ? '📥 नई समस्याएं' : '📥 New Problems' },
         { to: '/university-admin/allocations', label: lang === 'hi' ? '📌 आवंटन' : '📌 Allocations' },
+        { to: '/university-admin/mou', label: lang === 'hi' ? '📁 समझौता ज्ञापन (MOU)' : '📁 MOU' },
+        { to: '/university-admin/past-projects', label: lang === 'hi' ? '📁 पूर्व परियोजनाएं' : '📁 Past Projects' },
         { to: '/profile', label: lang === 'hi' ? '👤 मेरी प्रोफ़ाइल' : '👤 Profile' },
       ];
       break;

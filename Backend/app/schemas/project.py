@@ -103,6 +103,23 @@ class FacultyAssignRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class MultiFacultyAssignRequest(BaseModel):
+    """Payload for allocating one or more faculty mentors to a project/challenge."""
+
+    faculty_ids: List[str] = Field(..., min_length=1, description="List of authoritative faculty IDs to allocate")
+    project_title: Optional[str] = Field(None, description="Optional custom project title")
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class UniversityRejectRequest(BaseModel):
+    """Payload for university declining a challenge recommendation."""
+
+    reason: str = Field(..., min_length=3, description="Mandatory reason for rejection")
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class ProjectMemberResponse(BaseModel):
     """Representation of a student team member in project_members."""
 
@@ -164,3 +181,12 @@ class MilestoneResponse(BaseModel):
     created_at: Optional[str] = None
 
     model_config = ConfigDict(extra="ignore")
+
+
+class ProjectMilestoneStatusUpdate(BaseModel):
+    """Standardized 7-stage milestone update for assigned faculty."""
+
+    milestone: str = Field(..., description="Target standardized milestone from 7-stage sequence")
+
+    model_config = ConfigDict(extra="ignore")
+

@@ -1,4 +1,4 @@
-import { universityNames, domainList } from '../../data/orgData';
+import { universityNames, domainList, STUDENT_APPROVED_UNIVERSITIES } from '../../data/orgData';
 
 // Stakeholder-specific registration fields (Section 16). Each entry can be
 // a plain text input or a select with predefined options. `required: true`
@@ -6,7 +6,7 @@ import { universityNames, domainList } from '../../data/orgData';
 export const roleFieldsConfig = {
   citizen: [],
   student: [
-    { key: 'university', label: 'University', type: 'select', options: universityNames, required: true },
+    { key: 'university', label: 'University', type: 'select', options: STUDENT_APPROVED_UNIVERSITIES, required: true },
     { key: 'department', label: 'Department', required: true },
     { key: 'studentId', label: 'Student ID', required: true },
     { key: 'semester', label: 'Semester / Year' },

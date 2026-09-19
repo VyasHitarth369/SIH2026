@@ -39,7 +39,7 @@ export default function StudentProjectsPage() {
 
   return (
     <div>
-      <div className="page-head"><h1>{t.studentTitle}</h1></div>
+      <div className="page-head"><h1><Trans text="New Projects" /></h1></div>
       <div className="card">
         <h3 style={{ marginBottom: 12 }}>{t.availableChallenges}</h3>
 

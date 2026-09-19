@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { initialProblems } from '../data/mockData';
-import { fetchChallenges } from '../services/challengeService';
+import { fetchChallenges, fetchMyChallenges, voteChallenge } from '../services/challengeService';
 
 const ProblemsContext = createContext(null);
 
@@ -87,7 +87,9 @@ function finalizeAllocation(allocation) {
 
 export function ProblemsProvider({ children }) {
   const [problems, setProblems] = useState(initialProblems);
+  const [myProblems, setMyProblems] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMyProblems, setIsLoadingMyProblems] = useState(false);
   const votedIdsRef = useRef(new Set());
 
   // Load real challenges from FastAPI / Supabase backend on mount
@@ -117,6 +119,23 @@ export function ProblemsProvider({ children }) {
     return () => { isMounted = false; };
   }, []);
 
+  const refreshMyProblems = useCallback(async () => {
+    try {
+      setIsLoadingMyProblems(true);
+      const remote = await fetchMyChallenges();
+      if (Array.isArray(remote)) {
+        setMyProblems(remote.map(adaptSupabaseChallenge));
+      } else {
+        setMyProblems([]);
+      }
+    } catch (err) {
+      console.warn('Could not load user challenges:', err.message);
+      setMyProblems([]);
+    } finally {
+      setIsLoadingMyProblems(false);
+    }
+  }, []);
+
   // Periodically check for problems whose allocation deadline has passed
   // while still "awaiting_allocation", and auto-finalize them.
   useEffect(() => {
@@ -140,6 +159,7 @@ export function ProblemsProvider({ children }) {
     const newId = problem.id || problem.challenge_id || Date.now();
     const newProblem = {
       id: newId,
+      challenge_id: newId,
       type: 'unsolved',
       votes: 1,
       source: problem.source || 'citizen',
@@ -160,24 +180,36 @@ export function ProblemsProvider({ children }) {
       ...problem,
     };
     setProblems((prev) => [newProblem, ...prev]);
+    setMyProblems((prev) => [newProblem, ...prev]);
     return newId;
   }, []);
 
   const hasVoted = useCallback((id) => votedIdsRef.current.has(id), []);
 
-  const voteProblem = useCallback((id) => {
+  const voteProblem = useCallback(async (id) => {
     if (votedIdsRef.current.has(id)) return false;
     votedIdsRef.current.add(id);
-    setProblems((prev) => prev.map((p) => (p.id === id ? { ...p, votes: p.votes + 1 } : p)));
+
+    try {
+      await voteChallenge(id);
+    } catch (err) {
+      // If already voted or network issue, maintain state
+      console.warn('Voting note:', err.message);
+    }
+
+    setProblems((prev) => prev.map((p) => (p.id === id ? { ...p, votes: (p.votes || 0) + 1, has_voted: true } : p)));
+    setMyProblems((prev) => prev.map((p) => (p.id === id ? { ...p, votes: (p.votes || 0) + 1, has_voted: true } : p)));
     return true;
   }, []);
 
   const addFeedback = useCallback((id, feedback) => {
-    setProblems((prev) => prev.map((p) => {
+    const updateFn = (p) => {
       if (p.id !== id) return p;
       const feedbacks = p.feedbacks ? [...p.feedbacks, feedback] : [feedback];
       return { ...p, feedbacks };
-    }));
+    };
+    setProblems((prev) => prev.map(updateFn));
+    setMyProblems((prev) => prev.map(updateFn));
   }, []);
 
   /** Legacy allocation helper still used by the read-only Government view. */
@@ -268,8 +300,11 @@ export function ProblemsProvider({ children }) {
 
   const value = {
     problems,
+    myProblems,
     isLoading,
+    isLoadingMyProblems,
     refreshChallenges,
+    refreshMyProblems,
     addProblem,
     voteProblem,
     hasVoted,

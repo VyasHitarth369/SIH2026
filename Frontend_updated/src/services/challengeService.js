@@ -33,30 +33,44 @@ export async function submitChallenge(challengeData) {
  * Fetch challenges from the backend API.
  */
 export async function fetchChallenges({ status, city, limit } = {}) {
-  const params = new URLSearchParams();
-  if (status) params.append('status', status);
-  if (city) params.append('city', city);
-  if (limit) params.append('limit', String(limit));
+  const params = {};
+  if (status) params.status = status;
+  if (city) params.city = city;
+  if (limit) params.limit = limit;
 
-  const qs = params.toString() ? `?${params.toString()}` : '';
-  const response = await fetch(`${API_BASE_URL}/challenges${qs}`);
+  const res = await apiClient.get('/challenges', params);
+  return res?.data || [];
+}
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch challenges: ${response.statusText}`);
-  }
+/**
+ * Fetch challenges submitted strictly by the currently authenticated citizen.
+ */
+export async function fetchMyChallenges() {
+  const res = await apiClient.get('/challenges/mine');
+  return res?.data || [];
+}
 
-  const result = await response.json();
-  return result.data || [];
+/**
+ * Vote / support a challenge (1 vote per user).
+ */
+export async function voteChallenge(challengeId) {
+  const res = await apiClient.post(`/challenges/${challengeId}/vote`);
+  return res?.data || res;
+}
+
+/**
+ * Fetch read-only project milestones for a challenge.
+ */
+export async function fetchChallengeMilestones(challengeId) {
+  const res = await apiClient.get(`/challenges/${challengeId}/milestones`);
+  return res?.data || [];
 }
 
 /**
  * Fetch a single challenge by its challenge_id.
  */
 export async function fetchChallengeById(challengeId) {
-  const response = await fetch(`${API_BASE_URL}/challenges/${challengeId}`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch challenge: ${response.statusText}`);
-  }
-  const result = await response.json();
-  return result.data;
+  const res = await apiClient.get(`/challenges/${challengeId}`);
+  return res?.data || res;
 }
+

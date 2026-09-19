@@ -43,19 +43,26 @@ export default function StudentListPage() {
     // Build full student records for the confirmed team, enriching with
     // directory data (university/domain/technologies) where we have a match.
     const selectedApps = applications.filter((a) => checked.includes(a.id));
-    const newStudents = selectedApps.map((a) => {
-      const dirMatch = studentDirectory.find((s) => s.email === a.studentEmail);
-      return {
-        name: a.studentName,
-        email: a.studentEmail,
-        university: dirMatch?.university || problem.allocation.allocatedTo,
-        domain: dirMatch?.domain || problem.domain,
-        technologies: dirMatch?.technologies || problem.requiredTechnologies || [],
-        status: 'Active',
-        proposedSolution: a.idea.slice(0, 60),
-        proposedSolutionDesc: a.idea,
-      };
-    });
+    const existingEmails = new Set((problem.students || []).map((s) => s.email?.toLowerCase()));
+    const newStudents = selectedApps
+      .filter((a) => !existingEmails.has(a.studentEmail?.toLowerCase()))
+      .map((a) => {
+        const dirMatch = studentDirectory.find((s) => s.email === a.studentEmail);
+        return {
+          name: a.studentName,
+          email: a.studentEmail,
+          university: dirMatch?.university || problem.allocation?.allocatedTo,
+          domain: dirMatch?.domain || problem.domain,
+          technologies: dirMatch?.technologies || problem.requiredTechnologies || [],
+          status: 'Active',
+          proposedSolution: a.idea ? a.idea.slice(0, 60) : '',
+          proposedSolutionDesc: a.idea || '',
+        };
+      });
+    if (newStudents.length === 0 && selectedApps.length > 0) {
+      showToast(lang === 'hi' ? 'चयनित छात्र पहले से ही टीम में हैं।' : 'Selected student(s) are already in the team.');
+      return;
+    }
     assignStudents(problem.id, [...(problem.students || []), ...newStudents]);
     showToast(t.teamConfirmed);
   };
@@ -104,17 +111,36 @@ export default function StudentListPage() {
       <div className="card">
         <h4><Trans text={`Interested Applicants (${applications.length})`} /></h4>
         {applications.length === 0 && <p className="applicants-empty">{t.noApplicationsYet}</p>}
-        {applications.map((app) => (
-          <label className={`applicant-row${app.status === 'selected' ? ' applicant-row--selected' : ''}`} key={app.id}>
-            <input type="checkbox" checked={checked.includes(app.id)} onChange={() => toggle(app.id)} />
-            <div className="applicant-row__body">
-              <div className="applicant-row__head">
-                <strong>{app.studentName}</strong>
-                <span className="problem-meta">{app.studentEmail}</span>
-                {app.status === 'selected' && <span className="badge badge-teal">{t.selectedForTeam}</span>}
-                {app.status === 'not-selected' && <span className="badge badge-coral">{t.notSelected}</span>}
-              </div>
-              <p className="applicant-row__idea"><strong>{<Trans text="Proposed Solution Idea:" />}</strong> {app.idea}</p>
+        {applications.map((app) => {
+          const isAlreadyInTeam = (problem.students || []).some(
+            (s) => s.email?.toLowerCase() === app.studentEmail?.toLowerCase()
+          );
+          return (
+            <label
+              className={`applicant-row${app.status === 'selected' || isAlreadyInTeam ? ' applicant-row--selected' : ''}`}
+              key={app.id}
+              style={isAlreadyInTeam ? { opacity: 0.8, cursor: 'not-allowed' } : {}}
+            >
+              <input
+                type="checkbox"
+                checked={isAlreadyInTeam || checked.includes(app.id)}
+                disabled={isAlreadyInTeam}
+                onChange={() => !isAlreadyInTeam && toggle(app.id)}
+              />
+              <div className="applicant-row__body">
+                <div className="applicant-row__head">
+                  <strong>{app.studentName}</strong>
+                  <span className="problem-meta">{app.studentEmail}</span>
+                  {isAlreadyInTeam ? (
+                    <span className="badge badge-teal"><Trans text="Already in Team" /></span>
+                  ) : (
+                    <>
+                      {app.status === 'selected' && <span className="badge badge-teal">{t.selectedForTeam}</span>}
+                      {app.status === 'not-selected' && <span className="badge badge-coral">{t.notSelected}</span>}
+                    </>
+                  )}
+                </div>
+                <p className="applicant-row__idea"><strong>{<Trans text="Proposed Solution Idea:" />}</strong> {app.idea}</p>
               {app.attachment && (
                 <a
                   className="attachment-chip"
@@ -126,9 +152,10 @@ export default function StudentListPage() {
                   <PdfIcon /> {app.attachment.name}
                 </a>
               )}
-            </div>
-          </label>
-        ))}
+              </div>
+            </label>
+          );
+        })}
         {applications.length > 0 && (
           <button className="btn btn-success btn-sm" onClick={confirmSelection}>{t.confirmTeam}</button>
         )}

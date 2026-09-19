@@ -13,6 +13,25 @@ export const universities = [
 
 export const universityNames = universities.map((u) => u.name);
 
+// Exactly 15 approved universities for Student registration and profile
+export const STUDENT_APPROVED_UNIVERSITIES = [
+  'Birla Institute of Technology (BIT Mesra)',
+  'IIT (ISM) Dhanbad',
+  'NIT Jamshedpur',
+  'IIIT Ranchi',
+  'Birsa Agricultural University (BAU)',
+  'Central University of Jharkhand (CUJ)',
+  'AIIMS Deoghar',
+  'BIT Sindri',
+  'NIAMT Ranchi',
+  'Ranchi University',
+  'Nilamber-Pitamber University',
+  'Kolhan University',
+  'Sido Kanhu Murmu University',
+  "Jamshedpur Women's University",
+  'Jharkhand University of Technology (JUT)',
+];
+
 export const industries = [
   { id: 'tata-csr', name: 'Tata CSR Water Solutions', domain: 'IoT' },
   { id: 'tata-steel', name: 'Tata Steel Innovation Cell', domain: 'Software Development' },

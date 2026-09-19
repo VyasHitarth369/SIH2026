@@ -79,6 +79,14 @@ class UniversityWorkflowService:
                 ),
             )
 
+        # Enforce rejection reason requirement
+        if action == "reject":
+            if not response_note or not str(response_note).strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Rejection reason is mandatory when declining a problem statement.",
+                )
+
         # 4. Enforce response deadline
         deadline_str = match_record.get("response_deadline")
         if deadline_str:
@@ -107,7 +115,7 @@ class UniversityWorkflowService:
             "status": new_status,
             "responded_by": str(user.user_id),
             "responded_at": now_iso,
-            "response_note": response_note,
+            "response_note": response_note.strip() if response_note else None,
         }
 
         try:
@@ -530,6 +538,26 @@ class UniversityWorkflowService:
     # -------------------------------------------------------------------------
     # Internal Validation Helpers
     # -------------------------------------------------------------------------
+    def _resolve_university_admin_record(self, user: AuthenticatedUser) -> Optional[Dict[str, Any]]:
+        """Authoritatively resolves university admin stakeholder record from stakeholder, user_id, or email."""
+        if getattr(user, "stakeholder", None) and user.stakeholder.get("university_id"):
+            return user.stakeholder
+        if getattr(user, "user_id", None):
+            try:
+                res = self.client.table("university_admins").select("*").eq("user_id", str(user.user_id)).execute()
+                if res and res.data:
+                    return res.data[0]
+            except Exception:
+                pass
+        if getattr(user, "email", None):
+            try:
+                res = self.client.table("university_admins").select("*").eq("email", user.email).execute()
+                if res and res.data:
+                    return res.data[0]
+            except Exception:
+                pass
+        return None
+
     def _verify_admin_for_university(self, user: AuthenticatedUser, university_id: str):
         """Ensures that the user is an authorized, verified admin for university_id."""
         if user.role not in ["university_admin", "government"]:
@@ -545,7 +573,8 @@ class UniversityWorkflowService:
             )
 
         if user.role == "university_admin":
-            admin_uni = (user.stakeholder or {}).get("university_id")
+            admin_rec = self._resolve_university_admin_record(user)
+            admin_uni = (admin_rec or {}).get("university_id")
             if not admin_uni or admin_uni != university_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -557,12 +586,27 @@ class UniversityWorkflowService:
 
     def list_university_invitations(
         self,
-        university_id: str,
+        university_id: Optional[str],
         user: AuthenticatedUser,
         status_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Lists challenge match invitations for a university with hydrated challenge details."""
-        self._verify_admin_for_university(user, university_id)
+        if user.role == "university_admin":
+            admin_rec = self._resolve_university_admin_record(user)
+            auth_uni_id = (admin_rec or {}).get("university_id")
+            if not auth_uni_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: Could not resolve your authorized university institution.",
+                )
+            if university_id and university_id != auth_uni_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access forbidden: You cannot access invitations for university '{university_id}'.",
+                )
+            university_id = auth_uni_id
+        else:
+            self._verify_admin_for_university(user, university_id)
 
         try:
             query = (
@@ -594,6 +638,300 @@ class UniversityWorkflowService:
             hydrated.append(item)
 
         return hydrated
+
+    def list_university_faculty(self, user: AuthenticatedUser) -> List[Dict[str, Any]]:
+        """Lists authoritative faculty belonging strictly to the authenticated administrator's university."""
+        admin_rec = self._resolve_university_admin_record(user)
+        uni_id = (admin_rec or {}).get("university_id")
+        if not uni_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: Unlinked administrator cannot query university faculty.",
+            )
+        try:
+            res = (
+                self.client.table("faculty")
+                .select("faculty_id, faculty_name, university_id, department, designation, expertise, email, research_areas")
+                .eq("university_id", uni_id)
+                .order("faculty_name", desc=False)
+                .execute()
+            )
+            return res.data or []
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to fetch faculty list: {str(e)}",
+            )
+
+    def allocate_faculty_and_advance(
+        self,
+        challenge_id: str,
+        faculty_ids: List[str],
+        user: AuthenticatedUser,
+        project_title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Allocates faculty mentors (multiple selection supported) to an approved challenge.
+        Preserves projects.faculty_id as primary mentor; links all mentors in faculty records;
+        advances challenge and initializes project milestones to Stage 4 ('Faculty Assigned').
+        Triggers Top-5 Industry matching with real data (never invent student names).
+        """
+        if user.role not in ["university_admin", "government"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access forbidden: Role '{user.role}' cannot allocate faculty.",
+            )
+
+        admin_rec = self._resolve_university_admin_record(user)
+        uni_id = (admin_rec or {}).get("university_id")
+        if not uni_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: Could not resolve your authorized university institution.",
+            )
+
+        # 1. Verify challenge exists
+        challenge = self._get_challenge_or_404(challenge_id)
+
+        # 2. Verify match exists and is routed to this university
+        match = self._get_match_or_404(challenge_id, uni_id)
+        if match.get("status") in ["rejected", "expired"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot allocate faculty for match in status '{match.get('status')}'.",
+            )
+
+        # 3. Validate faculty_ids list
+        if not faculty_ids or not isinstance(faculty_ids, list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one faculty mentor must be selected.",
+            )
+
+        # Duplicate prevention (Part 8 & Clarification 1)
+        if len(faculty_ids) != len(set(faculty_ids)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Duplicate faculty assignment is not permitted. The same faculty member cannot be selected twice.",
+            )
+
+        # Verify all selected faculty belong strictly to this university
+        allocated_faculties = []
+        for fid in faculty_ids:
+            fac = self._get_faculty_or_404(fid)
+            if fac.get("university_id") != uni_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Faculty '{fid}' ({fac.get('faculty_name')}) does not belong to university '{uni_id}'.",
+                )
+            allocated_faculties.append(fac)
+
+        primary_faculty = allocated_faculties[0]
+        primary_fid = primary_faculty["faculty_id"]
+
+        # 4. Finalize or ensure university match status is 'selected'
+        try:
+            self.client.table("challenge_university_matches").update({
+                "status": "selected",
+                "responded_by": str(user.user_id),
+                "responded_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("challenge_id", challenge_id).eq("university_id", uni_id).execute()
+        except Exception:
+            pass
+
+        # 5. Check if project already exists, else create
+        existing_proj = None
+        try:
+            p_res = self.client.table("projects").select("*").eq("challenge_id", challenge_id).execute()
+            if p_res.data and len(p_res.data) > 0:
+                existing_proj = p_res.data[0]
+        except Exception:
+            pass
+
+        title = project_title or challenge.get("title") or "Collaborative Innovation Project"
+
+        if existing_proj:
+            project_id = existing_proj["project_id"]
+            try:
+                self.client.table("projects").update({
+                    "university_id": uni_id,
+                    "faculty_id": primary_fid,
+                    "status": "active" if existing_proj.get("status") in ["proposed", "active"] else existing_proj.get("status"),
+                }).eq("project_id", project_id).execute()
+                saved_project = {**existing_proj, "faculty_id": primary_fid}
+            except Exception:
+                saved_project = existing_proj
+        else:
+            project_id = f"PRJ-{uni_id}-{uuid.uuid4().hex[:6].upper()}"
+            proj_data = {
+                "project_id": project_id,
+                "challenge_id": challenge_id,
+                "university_id": uni_id,
+                "faculty_id": primary_fid,
+                "project_title": title,
+                "description": challenge.get("description"),
+                "status": "active",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                res = self.client.table("projects").insert(proj_data).execute()
+                saved_project = res.data[0] if res.data else proj_data
+            except Exception:
+                saved_project = proj_data
+
+        # Link project_id in faculty.past_project_ids for queryable relation
+        for fac in allocated_faculties:
+            existing_pids = fac.get("past_project_ids") or ""
+            pid_list = [p.strip() for p in str(existing_pids).split(",") if p.strip()]
+            if project_id not in pid_list:
+                pid_list.append(project_id)
+                new_pids = ", ".join(pid_list)
+                try:
+                    self.client.table("faculty").update({"past_project_ids": new_pids}).eq("faculty_id", fac["faculty_id"]).execute()
+                except Exception:
+                    pass
+
+        # 6. Initialize milestones to Stage 4: "Faculty Assigned"
+        milestone_stages = [
+            ("Problem Submitted", "Citizen/Stakeholder problem submitted to platform", "completed", 100),
+            ("Routed to Universities", "Deterministic routing to eligible university institutions", "completed", 100),
+            ("University Allocated", f"Officially allocated to {uni_id}", "completed", 100),
+            ("Faculty Assigned", f"Faculty mentor(s) assigned: {', '.join(f['faculty_name'] for f in allocated_faculties)}", "completed", 100),
+            ("Student Team Formed", "Formation and confirmation of multidisciplinary student team", "pending", 0),
+            ("Development In Progress", "Active solution prototyping and technical development", "pending", 0),
+            ("Solution Deployed", "Field testing, deployment, and impact validation", "pending", 0),
+        ]
+
+        try:
+            for name, desc, st, pct in milestone_stages:
+                m_check = self.client.table("project_milestones").select("milestone_id").eq("project_id", project_id).eq("milestone_name", name).execute()
+                if not m_check.data:
+                    self.client.table("project_milestones").insert({
+                        "project_id": project_id,
+                        "milestone_name": name,
+                        "description": desc,
+                        "assigned_to": primary_faculty.get("faculty_name") if name == "Faculty Assigned" else None,
+                        "status": st,
+                        "completion_percentage": pct,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }).execute()
+        except Exception:
+            pass
+
+        # Update challenge status
+        try:
+            self.client.table("challenges").update({"status": "project_created"}).eq("challenge_id", challenge_id).execute()
+        except Exception:
+            pass
+
+        # 7. Trigger deterministic Top-5 Industry matching (Part 11 & Clarification 2)
+        industry_matches = []
+        try:
+            from app.services.matching_service import MatchingService
+            industry_matches = MatchingService(self.client).get_or_generate_industry_matches(challenge_id, user, limit=5)
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "project_id": project_id,
+            "challenge_id": challenge_id,
+            "university_id": uni_id,
+            "primary_faculty_id": primary_fid,
+            "primary_faculty_name": primary_faculty.get("faculty_name"),
+            "assigned_faculties": [
+                {
+                    "faculty_id": f["faculty_id"],
+                    "faculty_name": f.get("faculty_name"),
+                    "department": f.get("department"),
+                    "designation": f.get("designation"),
+                    "email": f.get("email"),
+                }
+                for f in allocated_faculties
+            ],
+            "project": saved_project,
+            "industry_matches": industry_matches,
+            "current_milestone": "Faculty Assigned",
+            "message": f"Successfully allocated {len(allocated_faculties)} faculty mentor(s). Project created and Top-5 Industry matching initiated.",
+        }
+
+    def list_university_mous(self, user: AuthenticatedUser) -> List[Dict[str, Any]]:
+        """Lists factual MOU collaboration records for the authenticated university's partnered projects.
+        Strictly avoids fabricating fake PDFs or fake records.
+        """
+        if user.role not in ["university_admin", "government"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access forbidden: Role '{user.role}' cannot view university MOUs.",
+            )
+
+        admin_rec = self._resolve_university_admin_record(user)
+        uni_id = (admin_rec or {}).get("university_id")
+        if not uni_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: Could not resolve your authorized university institution.",
+            )
+
+        try:
+            p_res = (
+                self.client.table("projects")
+                .select("*")
+                .eq("university_id", uni_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            projects = p_res.data or []
+        except Exception:
+            projects = []
+
+        mous = []
+        for p in projects:
+            ind_id = p.get("industry_id")
+            if not ind_id:
+                cid = p.get("challenge_id")
+                if cid:
+                    try:
+                        cim = self.client.table("challenge_industry_matches").select("*").eq("challenge_id", cid).eq("status", "accepted").execute()
+                        if cim.data and len(cim.data) > 0:
+                            ind_id = cim.data[0].get("industry_id")
+                    except Exception:
+                        pass
+
+            if not ind_id:
+                continue
+
+            uni_res = self.client.table("universities").select("university_name").eq("university_id", uni_id).execute()
+            uni_name = uni_res.data[0].get("university_name") if (uni_res and uni_res.data) else uni_id
+
+            ind_res = self.client.table("industries").select("industry_name").eq("industry_id", ind_id).execute()
+            ind_name = ind_res.data[0].get("industry_name") if (ind_res and ind_res.data) else ind_id
+
+            ch_doc = None
+            if p.get("challenge_id"):
+                try:
+                    ch_res = self.client.table("challenges").select("title, document").eq("challenge_id", p["challenge_id"]).execute()
+                    if ch_res.data:
+                        ch_doc = ch_res.data[0].get("document")
+                except Exception:
+                    pass
+
+            pid = p.get("project_id")
+            mous.append({
+                "mou_id": f"MOU-{uni_id}-{ind_id}-{pid}",
+                "project_id": pid,
+                "project_title": p.get("project_title"),
+                "university_id": uni_id,
+                "university_name": uni_name,
+                "industry_id": ind_id,
+                "industry_name": ind_name,
+                "government_partner": "Government of Jharkhand — Department of Higher & Technical Education",
+                "status": "Active Collaboration",
+                "effective_date": p.get("start_date") or p.get("created_at", "")[:10],
+                "document_url": ch_doc,
+                "has_document": bool(ch_doc),
+            })
+
+        return mous
 
     def _get_challenge_or_404(self, challenge_id: str) -> Dict[str, Any]:
         try:

@@ -56,9 +56,12 @@ class ChallengeService:
         impact_scope = payload.get("impact_scope") or "Area Specific"
 
         # Authoritatively associate with authenticated user ID if provided
-        submitted_by = payload.get("submitted_by") or (user.full_name if user else None) or (user.email if user else None) or "Citizen"
-        
-        raw_uid = (user.user_id if user else None) or payload.get("user_id")
+        if user and user.user_id:
+            raw_uid = user.user_id
+            submitted_by = user.full_name or user.email or payload.get("submitted_by") or "Citizen"
+        else:
+            raw_uid = payload.get("user_id")
+            submitted_by = payload.get("submitted_by") or "Citizen"
         valid_uid = None
         if raw_uid:
             try:
@@ -142,6 +145,23 @@ class ChallengeService:
         except Exception:
             challenge["project"] = None
 
+        # Hydrate university rejections (Part 10 & Clarification 3)
+        rejections = []
+        try:
+            m_res = self.client.table("challenge_university_matches").select("*").eq("challenge_id", challenge_id).eq("status", "rejected").execute()
+            for m in (m_res.data or []):
+                u_res = self.client.table("universities").select("university_name").eq("university_id", m.get("university_id")).execute()
+                u_name = u_res.data[0].get("university_name") if (u_res and u_res.data) else m.get("university_id")
+                rejections.append({
+                    "university_id": m.get("university_id"),
+                    "university_name": u_name,
+                    "rejection_reason": m.get("response_note") or "Problem statement declined by university administration.",
+                    "rejected_at": m.get("responded_at"),
+                })
+        except Exception:
+            pass
+        challenge["university_rejections"] = rejections
+
         return challenge
 
     def list_challenges(
@@ -150,8 +170,12 @@ class ChallengeService:
         city_filter: Optional[str] = None,
         user_id_filter: Optional[str] = None,
         limit: int = 100,
+        user: Optional[AuthenticatedUser] = None,
     ) -> List[Dict[str, Any]]:
-        """Lists challenges with optional filtering by status, city, or user_id."""
+        """Lists challenges with optional filtering by status, city, or user_id.
+
+        Sanitizes data for public listing, hydrates vote counts, and identifies if user has voted.
+        """
         query = self.client.table("challenges").select("*")
         if status_filter:
             query = query.eq("status", status_filter)
@@ -160,9 +184,238 @@ class ChallengeService:
         if user_id_filter:
             query = query.eq("user_id", user_id_filter)
 
-        query = query.order("created_at", desc=True).limit(limit)
+        query = query.order("created_at", desc=True, nullsfirst=False).limit(limit)
         res = query.execute()
-        return res.data or []
+        challenges = res.data or []
+        if not challenges:
+            return []
+
+        # Batch hydrate votes and project info
+        challenge_ids = [c["challenge_id"] for c in challenges]
+        vote_counts: Dict[str, int] = {}
+        voted_challenges = set()
+        user_uuid = str(user.user_id) if user and user.user_id else None
+
+        try:
+            v_res = self.client.table("challenge_support").select("challenge_id, user_id").in_("challenge_id", challenge_ids).execute()
+            for row in (v_res.data or []):
+                cid = row.get("challenge_id")
+                vote_counts[cid] = vote_counts.get(cid, 0) + 1
+                if user_uuid and str(row.get("user_id")) == user_uuid:
+                    voted_challenges.add(cid)
+        except Exception:
+            pass
+
+        # Batch hydrate project summaries
+        proj_map: Dict[str, Any] = {}
+        try:
+            p_res = self.client.table("projects").select("project_id, challenge_id, project_title, status, university_id, industry_id").in_("challenge_id", challenge_ids).execute()
+            for p in (p_res.data or []):
+                proj_map[p["challenge_id"]] = p
+        except Exception:
+            pass
+
+        sanitized: List[Dict[str, Any]] = []
+        for c in challenges:
+            cid = c.get("challenge_id")
+            raw_sub = c.get("submitted_by") or "Citizen"
+            # Sanitize email or sensitive identifiers
+            if "@" in str(raw_sub):
+                display_sub = str(raw_sub).split("@")[0]
+            else:
+                display_sub = raw_sub
+
+            item = {
+                "challenge_id": cid,
+                "title": c.get("title"),
+                "description": c.get("description"),
+                "location": c.get("location"),
+                "city": c.get("city"),
+                "district": c.get("district") or c.get("city"),
+                "address": c.get("address"),
+                "pincode": c.get("pincode"),
+                "impact_scope": c.get("impact_scope"),
+                "photo": c.get("photo"),
+                "video": c.get("video"),
+                "document": c.get("document"),
+                "expected_solution": c.get("expected_solution"),
+                "status": c.get("status"),
+                "created_at": c.get("created_at"),
+                "submitted_by": display_sub,
+                "votes_count": vote_counts.get(cid, 0),
+                "has_voted": cid in voted_challenges,
+                "project": proj_map.get(cid),
+            }
+            # Only include user_id if specifically requested by user_id_filter query
+            if user_id_filter:
+                item["user_id"] = c.get("user_id")
+            sanitized.append(item)
+
+        return sanitized
+
+    def list_my_challenges(self, user: AuthenticatedUser) -> List[Dict[str, Any]]:
+        """Lists challenges submitted strictly by the authenticated user.
+
+        Server-side ownership is verified against the authenticated user_id.
+        """
+        user_uuid = str(user.user_id)
+        valid_uids = [user_uuid]
+        try:
+            uuid.UUID(user_uuid)
+        except (ValueError, AttributeError):
+            valid_uids.append(str(uuid.uuid5(uuid.NAMESPACE_DNS, user_uuid)))
+
+        res = (
+            self.client.table("challenges")
+            .select("*")
+            .in_("user_id", valid_uids)
+            .order("created_at", desc=True, nullsfirst=False)
+            .execute()
+        )
+        challenges = res.data or []
+        if not challenges:
+            return []
+
+        challenge_ids = [c["challenge_id"] for c in challenges]
+
+        # Batch hydrate ai_analysis
+        ai_map: Dict[str, Any] = {}
+        try:
+            ai_res = self.client.table("ai_analysis").select("*").in_("challenge_id", challenge_ids).execute()
+            for a in (ai_res.data or []):
+                ai_map[a["challenge_id"]] = a
+        except Exception:
+            pass
+
+        # Batch hydrate projects
+        proj_map: Dict[str, Any] = {}
+        try:
+            p_res = (
+                self.client.table("projects")
+                .select("project_id, challenge_id, project_title, status, university_id, industry_id")
+                .in_("challenge_id", challenge_ids)
+                .execute()
+            )
+            for p in (p_res.data or []):
+                proj_map[p["challenge_id"]] = p
+        except Exception:
+            pass
+
+        # Batch hydrate vote counts
+        vote_counts: Dict[str, int] = {}
+        try:
+            v_res = self.client.table("challenge_support").select("challenge_id").in_("challenge_id", challenge_ids).execute()
+            for v in (v_res.data or []):
+                cid = v.get("challenge_id")
+                vote_counts[cid] = vote_counts.get(cid, 0) + 1
+        except Exception:
+            pass
+
+        # Batch hydrate university rejections for submitter visibility (Part 10 & Clarification 3)
+        rejection_map: Dict[str, List[Dict[str, Any]]] = {}
+        try:
+            m_res = self.client.table("challenge_university_matches").select("*").in_("challenge_id", challenge_ids).eq("status", "rejected").execute()
+            for m in (m_res.data or []):
+                cid = m.get("challenge_id")
+                u_res = self.client.table("universities").select("university_name").eq("university_id", m.get("university_id")).execute()
+                u_name = u_res.data[0].get("university_name") if (u_res and u_res.data) else m.get("university_id")
+                rejection_map.setdefault(cid, []).append({
+                    "university_id": m.get("university_id"),
+                    "university_name": u_name,
+                    "rejection_reason": m.get("response_note") or "Problem statement declined by university administration.",
+                    "rejected_at": m.get("responded_at"),
+                })
+        except Exception:
+            pass
+
+        for c in challenges:
+            cid = c["challenge_id"]
+            c["ai_analysis"] = ai_map.get(cid)
+            c["project"] = proj_map.get(cid)
+            c["votes_count"] = vote_counts.get(cid, 0)
+            c["university_rejections"] = rejection_map.get(cid, [])
+
+        return challenges
+
+    def vote_challenge(self, challenge_id: str, user: AuthenticatedUser) -> Dict[str, Any]:
+        """Records a citizen's vote for a challenge in challenge_support. Enforces 1 vote per user."""
+        self.get_challenge(challenge_id)
+
+        user_uuid = str(user.user_id)
+        try:
+            uuid.UUID(user_uuid)
+        except (ValueError, AttributeError):
+            user_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, user_uuid))
+
+        # Check for existing vote
+        existing = (
+            self.client.table("challenge_support")
+            .select("support_id")
+            .eq("challenge_id", challenge_id)
+            .eq("user_id", user_uuid)
+            .execute()
+        )
+        if existing.data and len(existing.data) > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You have already voted for this problem.",
+            )
+
+        # Insert vote
+        self.client.table("challenge_support").insert({
+            "challenge_id": challenge_id,
+            "user_id": user_uuid,
+        }).execute()
+
+        # Count total votes
+        cnt_res = (
+            self.client.table("challenge_support")
+            .select("support_id", count="exact")
+            .eq("challenge_id", challenge_id)
+            .execute()
+        )
+        votes_count = cnt_res.count if cnt_res.count is not None else 1
+
+        return {
+            "challenge_id": challenge_id,
+            "votes_count": votes_count,
+            "has_voted": True,
+        }
+
+    def get_challenge_milestones(self, challenge_id: str) -> List[Dict[str, Any]]:
+        """Retrieves read-only milestone progress for the project linked to a challenge."""
+        try:
+            p_res = (
+                self.client.table("projects")
+                .select("project_id, project_title, status")
+                .eq("challenge_id", challenge_id)
+                .execute()
+            )
+            if not p_res.data:
+                return []
+            project_id = p_res.data[0]["project_id"]
+
+            m_res = (
+                self.client.table("project_milestones")
+                .select("milestone_id, milestone_name, description, deadline, status, completion_percentage, created_at")
+                .eq("project_id", project_id)
+                .order("deadline", desc=False)
+                .execute()
+            )
+            milestones = []
+            for m in (m_res.data or []):
+                milestones.append({
+                    "milestone_id": m.get("milestone_id"),
+                    "name": m.get("milestone_name") or "Milestone",
+                    "description": m.get("description"),
+                    "deadline": m.get("deadline"),
+                    "status": m.get("status") or "pending",
+                    "completion_percentage": m.get("completion_percentage", 0),
+                    "created_at": m.get("created_at"),
+                })
+            return milestones
+        except Exception:
+            return []
 
     # -------------------------------------------------------------------------
     # 2. AI Review & Existing-Solution Discovery (Call 1)

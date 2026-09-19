@@ -21,6 +21,7 @@ from app.schemas.project import (
     ProjectCreate,
     ProjectMemberAdd,
     ProjectMemberResponse,
+    ProjectMilestoneStatusUpdate,
     ProjectResponse,
     StudentInterestCreate,
 )
@@ -111,6 +112,8 @@ def list_projects(
     challenge_id: Optional[str] = Query(None, description="Filter by challenge ID"),
     status_filter: Optional[str] = Query(None, alias="status", description="Filter by project lifecycle status"),
     limit: int = Query(100, ge=1, le=500),
+    my_projects: bool = Query(False, description="Filter to projects where current student is an enrolled member"),
+    approved_only: bool = Query(False, description="Filter to approved/active projects"),
     current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
     uni_service: UniversityWorkflowService = Depends(get_workflow_service),
     proj_service: ProjectWorkflowService = Depends(get_project_workflow_service),
@@ -125,6 +128,8 @@ def list_projects(
                 challenge_id=challenge_id,
                 status_filter=status_filter,
                 limit=limit,
+                my_projects=my_projects,
+                approved_only=approved_only,
             )
         else:
             data = uni_service.list_projects(
@@ -159,9 +164,7 @@ def list_eligible_projects_for_employee(
     current_user: AuthenticatedUser = Depends(get_current_user),
     service: IndustryWorkflowService = Depends(get_industry_workflow_service),
 ):
-    """Lists projects partnered with the authenticated employee's industry,
-    including their personal interest status (interested, selected, not_selected, withdrawn).
-    """
+    """Lists active and prototype projects partnered with the authenticated employee's industry."""
     try:
         data = service.list_eligible_projects_for_employee(current_user)
         return {
@@ -175,6 +178,67 @@ def list_eligible_projects_for_employee(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list eligible projects for employee: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 2c. GET /api/projects/certificates — List Certificates for Student
+# -----------------------------------------------------------------------------
+@router.get(
+    "/certificates",
+    summary="List certificate eligibility for authenticated student",
+)
+def list_certificates(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: ProjectWorkflowService = Depends(get_project_workflow_service),
+):
+    """Lists all projects for the authenticated student with certificate eligibility and status."""
+    try:
+        data = service.list_student_certificates(current_user)
+        return {
+            "success": True,
+            "total": len(data),
+            "data": data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list certificates: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 2d. GET /api/projects/{project_id}/certificate — Single Project Certificate
+# -----------------------------------------------------------------------------
+@router.get(
+    "/{project_id}/certificate",
+    summary="Get and verify E-Certificate for completed project",
+)
+def get_project_certificate(
+    project_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: ProjectWorkflowService = Depends(get_project_workflow_service),
+):
+    """Retrieves authoritative E-Certificate for a project that reached 'Solution Deployed'.
+    Strictly enforces:
+    - User is enrolled member on the project
+    - Project status is 'deployed', 'solved', or 'completed'
+    """
+    try:
+        cert = service.get_project_certificate(project_id, current_user)
+        return {
+            "success": True,
+            "message": "Certificate retrieved successfully",
+            "data": cert,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve certificate: {str(e)}",
         )
 
 
@@ -413,6 +477,62 @@ def allocate_project_faculty(
 
 
 # -----------------------------------------------------------------------------
+# 6e. GET /api/projects/university/faculty — Authoritative University Faculty List
+# -----------------------------------------------------------------------------
+@router.get(
+    "/university/faculty",
+    summary="List authoritative faculty belonging to the authenticated administrator's university",
+)
+def list_my_university_faculty(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    uni_service: UniversityWorkflowService = Depends(get_workflow_service),
+):
+    """Returns faculty records for the authenticated university administrator."""
+    try:
+        data = uni_service.list_university_faculty(current_user)
+        return {
+            "success": True,
+            "total": len(data),
+            "data": data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch university faculty: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 6f. GET /api/projects/university/mous — Authoritative University MOU Records
+# -----------------------------------------------------------------------------
+@router.get(
+    "/university/mous",
+    summary="List MOU collaboration records for the authenticated administrator's university",
+)
+def list_my_university_mous(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    uni_service: UniversityWorkflowService = Depends(get_workflow_service),
+):
+    """Returns MOU collaboration records for the authenticated university administrator."""
+    try:
+        data = uni_service.list_university_mous(current_user)
+        return {
+            "success": True,
+            "total": len(data),
+            "data": data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch university MOUs: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
 # 7. GET /api/projects/{project_id}/milestones — List Project Milestones
 # -----------------------------------------------------------------------------
 @router.get(
@@ -476,6 +596,49 @@ def create_project_milestone(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create milestone: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 8b. PATCH /api/projects/{project_id}/milestone — Update Standardized Milestone
+# -----------------------------------------------------------------------------
+@router.patch(
+    "/{project_id}/milestone",
+    summary="Update standardized 7-stage project milestone for assigned faculty",
+)
+def update_standardized_milestone(
+    project_id: str,
+    milestone_in: ProjectMilestoneStatusUpdate,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: ProjectWorkflowService = Depends(get_project_workflow_service),
+):
+    """Allows assigned faculty to advance milestone along the authoritative 7-stage sequence.
+
+    Enforces:
+    - User is authenticated assigned faculty for this project (HTTP 403)
+    - Completed projects ("Solution Deployed") cannot be edited (HTTP 400)
+    - Backward progression is blocked (HTTP 400)
+    - Skipping required stages is blocked (HTTP 400)
+    - Specifically allows Student Team Formed -> Development In Progress
+    - Specifically allows Development In Progress -> Solution Deployed
+    """
+    try:
+        res = service.update_project_standardized_milestone(
+            project_id=project_id,
+            milestone_input=milestone_in.milestone,
+            user=current_user,
+        )
+        return {
+            "success": True,
+            "message": res.get("message", "Project milestone updated successfully."),
+            "data": res,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update milestone: {str(e)}",
         )
 
 

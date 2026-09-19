@@ -8,7 +8,7 @@ Handles collaborative project operations for Phase 6:
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException, status
 
 from app.database import get_supabase
@@ -17,6 +17,35 @@ from app.services.auth_service import AuthenticatedUser
 
 class ProjectWorkflowService:
     """Service managing project memberships, role-based visibility, and milestone tracking."""
+
+    STANDARDIZED_MILESTONES = [
+        "Problem Submitted",
+        "Routed to Universities",
+        "University Allocated",
+        "Faculty Assigned",
+        "Student Team Formed",
+        "Development In Progress",
+        "Solution Deployed",
+    ]
+
+    MILESTONE_KEY_MAP = {
+        "submitted": "Problem Submitted",
+        "problem submitted": "Problem Submitted",
+        "routed": "Routed to Universities",
+        "routed to universities": "Routed to Universities",
+        "allocated": "University Allocated",
+        "university allocated": "University Allocated",
+        "faculty": "Faculty Assigned",
+        "faculty assigned": "Faculty Assigned",
+        "team": "Student Team Formed",
+        "student team formed": "Student Team Formed",
+        "progress": "Development In Progress",
+        "development in progress": "Development In Progress",
+        "deployed": "Solution Deployed",
+        "solution deployed": "Solution Deployed",
+        "solved": "Solution Deployed",
+        "completed": "Solution Deployed",
+    }
 
     def __init__(self, client=None):
         self._client = client
@@ -278,6 +307,26 @@ class ProjectWorkflowService:
                 detail=f"Invalid member status '{new_status}'. Allowed: 'active', 'rejected', 'removed'.",
             )
 
+        if new_status == "active":
+            try:
+                chk = (
+                    self.client.table("project_members")
+                    .select("*")
+                    .eq("project_id", project_id)
+                    .eq("student_id", student_id)
+                    .eq("status", "active")
+                    .execute()
+                )
+                if chk.data and len(chk.data) > 0:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Duplicate selection: Student '{student_id}' is already an active member of project '{project_id}'.",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
         try:
             res = (
                 self.client.table("project_members")
@@ -494,9 +543,243 @@ class ProjectWorkflowService:
         except Exception:
             return []
 
+    def get_project_current_stage(self, project_id: str) -> Tuple[int, str]:
+        """Returns (index, milestone_name) for the project within the 7 standardized stages."""
+        project = self._get_project_or_404(project_id)
+        if project.get("status") in ["deployed", "solved", "completed"]:
+            return (6, "Solution Deployed")
+
+        highest_idx = 3  # At least Faculty Assigned (index 3) since project is assigned
+        try:
+            m_res = (
+                self.client.table("project_milestones")
+                .select("milestone_name, status")
+                .eq("project_id", project_id)
+                .execute()
+            )
+            for m in (m_res.data or []):
+                m_name = m.get("milestone_name")
+                if m_name:
+                    norm = self.MILESTONE_KEY_MAP.get(m_name.strip().lower())
+                    if norm in self.STANDARDIZED_MILESTONES and m.get("status") in ["completed", "active"]:
+                        idx = self.STANDARDIZED_MILESTONES.index(norm)
+                        if idx > highest_idx:
+                            highest_idx = idx
+        except Exception:
+            pass
+
+        # Also check project_members: if active students exist and highest_idx < 4
+        try:
+            pm_res = (
+                self.client.table("project_members")
+                .select("student_id")
+                .eq("project_id", project_id)
+                .eq("status", "active")
+                .execute()
+            )
+            if pm_res.data and len(pm_res.data) > 0 and highest_idx < 4:
+                highest_idx = 4  # Student Team Formed
+        except Exception:
+            pass
+
+        return (highest_idx, self.STANDARDIZED_MILESTONES[highest_idx])
+
+    def update_project_standardized_milestone(
+        self,
+        project_id: str,
+        milestone_input: str,
+        user: AuthenticatedUser,
+    ) -> Dict[str, Any]:
+        """Allows assigned faculty to advance milestone along the authoritative 7-stage sequence.
+
+        Validations:
+        - Only assigned faculty (or authorized admin) can update (HTTP 403)
+        - Completed projects cannot be edited (HTTP 400)
+        - Predefined standardized stages only (HTTP 400)
+        - Backward transitions are rejected (HTTP 400)
+        - Skipping required stages is rejected (HTTP 400)
+        - Explicitly allows: Student Team Formed -> Development In Progress
+        - Explicitly allows: Development In Progress -> Solution Deployed
+        """
+        project = self._get_project_or_404(project_id)
+
+        # 1. Authorize: Only assigned faculty (or university admin / gov) can update
+        if user.role == "faculty":
+            fac_rec = self._resolve_faculty_record(user)
+            auth_fac_id = (fac_rec or {}).get("faculty_id") or (user.stakeholder or {}).get("faculty_id")
+            if not auth_fac_id or auth_fac_id != project.get("faculty_id"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: Only the assigned faculty can edit milestones for this project.",
+                )
+        elif user.role not in ["university_admin", "government"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: You do not have permission to edit milestones for this project.",
+            )
+
+        # 2. Check if already completed
+        if project.get("status") in ["deployed", "solved", "completed"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid milestone update: Completed projects cannot be edited.",
+            )
+
+        # 3. Validate milestone is in standardized sequence
+        clean_input = (milestone_input or "").strip().lower()
+        norm_target = self.MILESTONE_KEY_MAP.get(clean_input)
+        if not norm_target or norm_target not in self.STANDARDIZED_MILESTONES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid milestone '{milestone_input}'. Predefined stages are: {self.STANDARDIZED_MILESTONES}.",
+            )
+
+        target_idx = self.STANDARDIZED_MILESTONES.index(norm_target)
+        curr_idx, curr_stage = self.get_project_current_stage(project_id)
+
+        # 4. Strict Progression Rules:
+        # Backward transitions blocked
+        if target_idx < curr_idx:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid milestone transition: Cannot move backward from '{curr_stage}' to '{norm_target}'.",
+            )
+
+        # Skipping required stages blocked
+        if target_idx > curr_idx + 1:
+            allowed_next = self.STANDARDIZED_MILESTONES[curr_idx + 1]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid milestone transition: Skipping required stages from '{curr_stage}' to '{norm_target}' is not permitted. Next stage is '{allowed_next}'.",
+            )
+
+        now_ts = datetime.now(timezone.utc).isoformat()
+        pct_map = {
+            "Student Team Formed": 60,
+            "Development In Progress": 80,
+            "Solution Deployed": 100,
+        }
+
+        # 5. Persist milestone in project_milestones
+        m_rec = {
+            "project_id": project_id,
+            "milestone_name": norm_target,
+            "status": "completed",
+            "completion_percentage": pct_map.get(norm_target, 100),
+            "created_at": now_ts,
+        }
+        try:
+            self.client.table("project_milestones").insert(m_rec).execute()
+        except Exception:
+            pass
+
+        # 6. Update project status and linked challenge
+        proj_updates = {}
+        if norm_target == "Solution Deployed":
+            proj_updates["status"] = "deployed"
+            proj_updates["actual_end_date"] = now_ts
+            cid = project.get("challenge_id")
+            if cid:
+                try:
+                    self.client.table("challenges").update({"status": "resolved"}).eq("challenge_id", cid).execute()
+                except Exception:
+                    pass
+        elif norm_target in ["Development In Progress", "Student Team Formed"]:
+            if project.get("status") == "proposed":
+                proj_updates["status"] = "active"
+
+        if proj_updates:
+            try:
+                self.client.table("projects").update(proj_updates).eq("project_id", project_id).execute()
+            except Exception:
+                pass
+
+        return {
+            "project_id": project_id,
+            "milestone": norm_target,
+            "previous_milestone": curr_stage,
+            "current_milestone": norm_target,
+            "status": proj_updates.get("status", project.get("status")),
+            "completion_percentage": pct_map.get(norm_target, 100),
+            "updated_at": now_ts,
+            "message": f"Project milestone advanced successfully to '{norm_target}'.",
+        }
+
     # -------------------------------------------------------------------------
     # 3. Role-Based Project Visibility
     # -------------------------------------------------------------------------
+    def _get_record_silent(self, table_name: str, key_field: str, key_val: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not key_val:
+            return None
+        try:
+            res = self.client.table(table_name).select("*").eq(key_field, key_val).execute()
+            return res.data[0] if (res and res.data) else None
+        except Exception:
+            return None
+
+    def _resolve_student_record(self, user: Optional[AuthenticatedUser]) -> Optional[Dict[str, Any]]:
+        if not user:
+            return None
+        if user.stakeholder and user.stakeholder.get("student_id"):
+            return user.stakeholder
+        if getattr(user, "user_id", None):
+            try:
+                res = self.client.table("students").select("*").eq("user_id", user.user_id).execute()
+                if res and res.data:
+                    return res.data[0]
+            except Exception:
+                pass
+        if getattr(user, "email", None):
+            try:
+                res = self.client.table("students").select("*").eq("email", user.email).execute()
+                if res and res.data:
+                    return res.data[0]
+            except Exception:
+                pass
+        return None
+
+    def _resolve_university_admin_record(self, user: Optional[AuthenticatedUser]) -> Optional[Dict[str, Any]]:
+        if not user:
+            return None
+        if getattr(user, "stakeholder", None) and user.stakeholder.get("university_id"):
+            return user.stakeholder
+        if getattr(user, "user_id", None):
+            try:
+                res = self.client.table("university_admins").select("*").eq("user_id", str(user.user_id)).execute()
+                if res and res.data:
+                    return res.data[0]
+            except Exception:
+                pass
+        if getattr(user, "email", None):
+            try:
+                res = self.client.table("university_admins").select("*").eq("email", user.email).execute()
+                if res and res.data:
+                    return res.data[0]
+            except Exception:
+                pass
+        return None
+
+    def _resolve_faculty_record(self, user: Optional[AuthenticatedUser]) -> Optional[Dict[str, Any]]:
+        if not user:
+            return None
+        if user.stakeholder and user.stakeholder.get("faculty_id"):
+            return user.stakeholder
+        if getattr(user, "user_id", None):
+            try:
+                res = self.client.table("faculty").select("*").eq("user_id", user.user_id).execute()
+                if res and res.data:
+                    return res.data[0]
+            except Exception:
+                pass
+        if getattr(user, "email", None):
+            try:
+                res = self.client.table("faculty").select("*").eq("email", user.email).execute()
+                if res and res.data:
+                    return res.data[0]
+            except Exception:
+                pass
+        return None
+
     def list_projects_for_user(
         self,
         user: Optional[AuthenticatedUser] = None,
@@ -505,35 +788,58 @@ class ProjectWorkflowService:
         challenge_id: Optional[str] = None,
         status_filter: Optional[str] = None,
         limit: int = 100,
+        my_projects: bool = False,
+        approved_only: bool = False,
+        hydrate: bool = True,
     ) -> List[Dict[str, Any]]:
         """Lists projects with role-aware visibility defaults:
 
-        - student: projects where student is in project_members, or university available projects
-        - faculty: projects where faculty_id matches user's faculty_id
-        - university_admin: projects where university_id matches user's university_id
+        - student:
+            - if my_projects: strictly projects where student is an active/selected member
+            - otherwise: projects belonging to student's university
+            - if approved_only: excludes unapproved/proposed/rejected projects
+        - faculty: projects where faculty_id matches authenticated faculty_id
+        - university_admin: projects where university_id matches authoritative university_id
         - government / unauthenticated: all projects or query-filtered
         """
         query = self.client.table("projects").select("*")
 
         # Apply role-specific defaults if not explicitly requested
         if user and user.role == "faculty":
-            user_fac_id = (user.stakeholder or {}).get("faculty_id")
-            if user_fac_id and not faculty_id:
-                query = query.eq("faculty_id", user_fac_id)
-            elif faculty_id:
-                query = query.eq("faculty_id", faculty_id)
+            fac_rec = self._resolve_faculty_record(user)
+            auth_fac_id = (fac_rec or {}).get("faculty_id") or (user.stakeholder or {}).get("faculty_id")
+            if not auth_fac_id:
+                return []
+            # Authoritative filter: strictly scoped to assigned faculty, ignore/block external query param overrides
+            query = query.eq("faculty_id", auth_fac_id)
 
         elif user and user.role == "university_admin":
-            user_uni_id = (user.stakeholder or {}).get("university_id")
-            if user_uni_id and not university_id:
-                query = query.eq("university_id", user_uni_id)
-            elif university_id:
-                query = query.eq("university_id", university_id)
+            admin_rec = self._resolve_university_admin_record(user)
+            auth_uni_id = (admin_rec or {}).get("university_id") or (user.stakeholder or {}).get("university_id")
+            if not auth_uni_id:
+                return []
+            # Authoritative filter: strictly scoped to university_admin's university, ignore external query param overrides
+            query = query.eq("university_id", auth_uni_id)
 
         elif user and user.role == "student":
-            user_uni_id = (user.stakeholder or {}).get("university_id")
-            if user_uni_id:
-                query = query.eq("university_id", user_uni_id)
+            s_rec = self._resolve_student_record(user)
+            user_uni_id = (user.stakeholder or {}).get("university_id") or (s_rec or {}).get("university_id")
+
+            if my_projects:
+                stu_id = (s_rec or {}).get("student_id") or (user.stakeholder or {}).get("student_id")
+                if not stu_id:
+                    return []
+                try:
+                    pm_res = self.client.table("project_members").select("project_id").eq("student_id", stu_id).execute()
+                    member_pids = [m["project_id"] for m in (pm_res.data or []) if m.get("project_id")]
+                except Exception:
+                    member_pids = []
+                if not member_pids:
+                    return []
+                query = query.in_("project_id", member_pids)
+            else:
+                if user_uni_id:
+                    query = query.eq("university_id", user_uni_id)
 
         else:
             if university_id:
@@ -550,9 +856,287 @@ class ProjectWorkflowService:
 
         try:
             res = query.execute()
-            return res.data or []
+            projects = res.data or []
         except Exception:
             return []
+
+        # Filter approved_only if requested
+        if approved_only:
+            # Active/approved statuses: excludes proposed, rejected, unrouted
+            approved_set = {"active", "prototype", "pilot", "deployed", "solved", "completed"}
+            projects = [p for p in projects if p.get("status") in approved_set]
+
+        if not hydrate:
+            return projects
+
+        # Hydrate projects with rich metadata for student & dashboard display
+        calling_student = self._resolve_student_record(user) if (user and user.role == "student") else None
+        calling_stu_id = calling_student.get("student_id") if calling_student else None
+
+        hydrated = []
+        for p in projects:
+            item = dict(p)
+            pid = item.get("project_id")
+            cid = item.get("challenge_id")
+
+            ch = self._get_record_silent("challenges", "challenge_id", cid) or {}
+            uni = self._get_record_silent("universities", "university_id", item.get("university_id")) or {}
+            fac = self._get_record_silent("faculty", "faculty_id", item.get("faculty_id")) or {}
+            ind = self._get_record_silent("industries", "industry_id", item.get("industry_id")) or {}
+
+            # Student members and applicants
+            stu_names = []
+            active_students = []
+            pending_applicants = []
+            is_member = False
+            try:
+                pm_res = self.client.table("project_members").select("student_id, status, role").eq("project_id", pid).execute()
+                for pm in (pm_res.data or []):
+                    sid = pm.get("student_id")
+                    st = pm.get("status", "active")
+                    s = self._get_record_silent("students", "student_id", sid)
+                    s_name = s.get("student_name", sid) if s else sid
+                    s_email = s.get("email") if s else None
+
+                    if st in ("active", "selected", "completed"):
+                        if calling_stu_id and sid == calling_stu_id:
+                            is_member = True
+                        if s_name:
+                            stu_names.append(s_name)
+                        active_students.append({
+                            "student_id": sid,
+                            "name": s_name,
+                            "email": s_email,
+                            "status": st,
+                            "role": pm.get("role", "member"),
+                        })
+                    elif st == "pending" or pm.get("role") == "applicant":
+                        pending_applicants.append({
+                            "student_id": sid,
+                            "student_name": s_name,
+                            "email": s_email,
+                            "role": pm.get("role", "applicant"),
+                            "status": "pending",
+                        })
+            except Exception:
+                pass
+
+            # Authoritative standardized milestone calculation
+            try:
+                _, curr_milestone = self.get_project_current_stage(pid)
+            except Exception:
+                curr_milestone = "Solution Deployed" if item.get("status") in ("deployed", "solved", "completed") else "Faculty Assigned"
+
+            # Industry employee and mentor hydration (Part 12, 13 & Clarification 4)
+            ind_emp_name = None
+            ind_emp_desig = None
+            try:
+                pei_res = self.client.table("project_employee_interests").select("employee_id, status").eq("project_id", pid).execute()
+                interests = pei_res.data or []
+                selected_emp = next((i for i in interests if i.get("status") == "selected"), None) or (interests[0] if interests else None)
+                if selected_emp:
+                    emp_rec = self._get_record_silent("industry_employees", "employee_id", selected_emp.get("employee_id"))
+                    if emp_rec:
+                        ind_emp_name = emp_rec.get("employee_name")
+                        ind_emp_desig = emp_rec.get("designation")
+                if not ind_emp_name and item.get("industry_id"):
+                    ie_res = self.client.table("industry_employees").select("employee_name, designation").eq("industry_id", item.get("industry_id")).limit(1).execute()
+                    if ie_res.data:
+                        ind_emp_name = ie_res.data[0].get("employee_name")
+                        ind_emp_desig = ie_res.data[0].get("designation")
+            except Exception:
+                pass
+
+            # Multiple faculty mentors hydration (Part 8, 16 & Clarification 1)
+            faculty_mentors = []
+            if fac and fac.get("faculty_name"):
+                faculty_mentors.append({
+                    "faculty_id": fac.get("faculty_id"),
+                    "faculty_name": fac.get("faculty_name"),
+                    "department": fac.get("department"),
+                    "email": fac.get("email"),
+                    "role": "Primary Faculty Mentor",
+                })
+            try:
+                f_all = self.client.table("faculty").select("faculty_id, faculty_name, department, email, past_project_ids").eq("university_id", item.get("university_id")).execute()
+                for f_row in (f_all.data or []):
+                    if f_row.get("faculty_id") != item.get("faculty_id"):
+                        pids = [p.strip() for p in str(f_row.get("past_project_ids") or "").split(",") if p.strip()]
+                        if pid in pids:
+                            faculty_mentors.append({
+                                "faculty_id": f_row.get("faculty_id"),
+                                "faculty_name": f_row.get("faculty_name"),
+                                "department": f_row.get("department"),
+                                "email": f_row.get("email"),
+                                "role": "Co-Mentor Faculty",
+                            })
+            except Exception:
+                pass
+
+            item["title"] = item.get("project_title") or ch.get("title") or "Collaborative Innovation Project"
+            item["challenge_title"] = ch.get("title") or item.get("project_title")
+            item["description"] = item.get("description") or ch.get("description") or "Collaborative innovation project."
+            item["location"] = ch.get("location") or ch.get("address") or f"{ch.get('city', '')}, Jharkhand".strip(", ") or "Jharkhand, India"
+            item["city"] = ch.get("city") or uni.get("city") or "Jharkhand"
+            item["district"] = ch.get("district") or uni.get("district") or "Jharkhand"
+            item["skills_required"] = ch.get("expected_solution") or uni.get("skills") or "Engineering, IoT, Software"
+            item["faculty_name"] = fac.get("faculty_name") or "Faculty Advisor"
+            item["faculty_email"] = fac.get("email")
+            item["faculty_mentors"] = faculty_mentors
+            item["industry_name"] = ind.get("industry_name") or "Industry Partner"
+            item["industry_employee_name"] = ind_emp_name
+            item["industry_employee_designation"] = ind_emp_desig
+            item["industry_mentor_name"] = ind_emp_name
+            item["student_participants"] = stu_names
+            item["student_names"] = stu_names
+            item["students"] = active_students
+            item["applicants"] = pending_applicants
+            item["university_name"] = uni.get("university_name") or "Partner University"
+            item["is_member"] = is_member
+            item["is_deployed"] = item.get("status") in ("deployed", "solved", "completed")
+            item["current_milestone"] = curr_milestone
+
+            hydrated.append(item)
+
+        return hydrated
+
+    # -------------------------------------------------------------------------
+    # Certificate Issuance & Student Eligibility
+    # -------------------------------------------------------------------------
+    def get_project_certificate(self, project_id: str, user: AuthenticatedUser) -> Dict[str, Any]:
+        """Validates student membership and authoritative 'Solution Deployed' milestone
+
+        to issue or view the official E-Certificate.
+        Raises HTTP 403 if user is not an active team member.
+        Raises HTTP 400 if project has not reached 'Solution Deployed' milestone.
+        """
+        project = self._get_project_or_404(project_id)
+        s_rec = self._resolve_student_record(user)
+        stu_id = s_rec.get("student_id") if s_rec else None
+
+        # Verify user is an authorized member
+        if user.role == "student":
+            if not stu_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: Student record not found.",
+                )
+            pm_res = (
+                self.client.table("project_members")
+                .select("*")
+                .eq("project_id", project_id)
+                .eq("student_id", stu_id)
+                .execute()
+            )
+            members = [m for m in (pm_res.data or []) if m.get("status") in ("active", "selected", "completed")]
+            if not members:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You are not an enrolled team member of this project.",
+                )
+
+        # Authoritative completion rule: MUST reach 'Solution Deployed'
+        # status in ('deployed', 'solved', 'completed')
+        is_deployed = project.get("status") in ("deployed", "solved", "completed")
+        if not is_deployed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Certificate is not available before the 'Solution Deployed' milestone.",
+            )
+
+        student_name = (s_rec or {}).get("student_name") or user.full_name or "Student Contributor"
+        uni = self._get_record_silent("universities", "university_id", project.get("university_id")) or {}
+        fac = self._get_record_silent("faculty", "faculty_id", project.get("faculty_id")) or {}
+        ind = self._get_record_silent("industries", "industry_id", project.get("industry_id")) or {}
+        ch = self._get_record_silent("challenges", "challenge_id", project.get("challenge_id")) or {}
+
+        cert_id = f"JH-SS-CERT-{project_id.replace('PRJ-', '')}-{stu_id or 'STU'}"
+        verify_code = f"SS-{project_id[:8]}-{stu_id or 'MEM'}".upper()
+
+        return {
+            "certificate_id": cert_id,
+            "project_id": project_id,
+            "project_title": project.get("project_title") or ch.get("title") or "Collaborative Solution",
+            "challenge_title": ch.get("title") or project.get("project_title"),
+            "student_id": stu_id,
+            "student_name": student_name,
+            "university_id": project.get("university_id"),
+            "university_name": uni.get("university_name") or "Government Partner University",
+            "faculty_name": fac.get("faculty_name") or "Faculty Project Guide",
+            "industry_name": ind.get("industry_name") or "Industry Partner",
+            "status": "eligible",
+            "milestone_reached": "Solution Deployed",
+            "completion_date": project.get("actual_end_date") or (project.get("created_at")[:10] if project.get("created_at") else "2026-09-18"),
+            "verification_code": verify_code,
+            "issuer": "Government of Jharkhand — Department of Higher & Technical Education",
+            "platform": "Samadhan Setu / Concordia Innovation Platform",
+        }
+
+    def list_student_certificates(self, user: AuthenticatedUser) -> List[Dict[str, Any]]:
+        """Lists all projects where the student is a member, indicating certificate eligibility and status."""
+        s_rec = self._resolve_student_record(user)
+        stu_id = s_rec.get("student_id") if s_rec else None
+        if not stu_id:
+            return []
+
+        try:
+            pm_res = (
+                self.client.table("project_members")
+                .select("project_id, status")
+                .eq("student_id", stu_id)
+                .execute()
+            )
+            active_pids = [
+                m["project_id"] for m in (pm_res.data or [])
+                if m.get("status") in ("active", "selected", "completed")
+            ]
+        except Exception:
+            active_pids = []
+
+        if not active_pids:
+            return []
+
+        cert_list = []
+        for pid in active_pids:
+            p = self._get_record_silent("projects", "project_id", pid)
+            if not p:
+                continue
+            is_deployed = p.get("status") in ("deployed", "solved", "completed")
+            ch = self._get_record_silent("challenges", "challenge_id", p.get("challenge_id")) or {}
+            uni = self._get_record_silent("universities", "university_id", p.get("university_id")) or {}
+            fac = self._get_record_silent("faculty", "faculty_id", p.get("faculty_id")) or {}
+            ind = self._get_record_silent("industries", "industry_id", p.get("industry_id")) or {}
+
+            cert_data = None
+            if is_deployed:
+                cert_data = {
+                    "certificate_id": f"JH-SS-CERT-{pid.replace('PRJ-', '')}-{stu_id}",
+                    "project_id": pid,
+                    "project_title": p.get("project_title") or ch.get("title"),
+                    "challenge_title": ch.get("title") or p.get("project_title"),
+                    "student_id": stu_id,
+                    "student_name": s_rec.get("student_name") or user.full_name or "Student Contributor",
+                    "university_name": uni.get("university_name"),
+                    "faculty_name": fac.get("faculty_name"),
+                    "industry_name": ind.get("industry_name"),
+                    "status": "eligible",
+                    "milestone_reached": "Solution Deployed",
+                    "completion_date": p.get("actual_end_date") or (p.get("created_at")[:10] if p.get("created_at") else "2026-09-18"),
+                    "verification_code": f"SS-{pid[:8]}-{stu_id}".upper(),
+                    "issuer": "Government of Jharkhand — Department of Higher & Technical Education",
+                    "platform": "Samadhan Setu / Concordia Innovation Platform",
+                }
+
+            cert_list.append({
+                "project_id": pid,
+                "project_title": p.get("project_title") or ch.get("title"),
+                "status": p.get("status"),
+                "is_eligible": is_deployed,
+                "lock_reason": None if is_deployed else "Certificate is locked. This project is currently in progress and will become available once the 'Solution Deployed' milestone is reached.",
+                "certificate": cert_data,
+            })
+
+        return cert_list
 
     # -------------------------------------------------------------------------
     # Internal Validation Helpers
@@ -624,7 +1208,8 @@ class ProjectWorkflowService:
                 return
 
         if user.role == "faculty":
-            user_fac = (user.stakeholder or {}).get("faculty_id")
+            fac_rec = self._resolve_faculty_record(user)
+            user_fac = (fac_rec or {}).get("faculty_id") or (user.stakeholder or {}).get("faculty_id")
             if user_fac and user_fac == project.get("faculty_id"):
                 return
 

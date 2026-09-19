@@ -1,14 +1,19 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import HomePage from './pages/HomePage';
+import LoginPage from './pages/LoginPage';
 import DashboardLayout from './components/layout/DashboardLayout';
 import ProtectedRoute from './components/layout/ProtectedRoute';
 
 import ProblemsPage from './pages/citizen/ProblemsPage';
+import AllProblemsPage from './pages/citizen/AllProblemsPage';
 import AddProblemPage from './pages/citizen/AddProblemPage';
 import GlobalSearchPage from './pages/citizen/GlobalSearchPage';
 import ProblemValidationPage from './pages/citizen/ProblemValidationPage';
 
 import StudentProjectsPage from './pages/student/ProjectsPage';
+import StudentUniversityProblemsPage from './pages/student/UniversityProblemsPage';
+import StudentMyProjectsPage from './pages/student/MyProjectsPage';
+import StudentCertificatePage from './pages/student/CertificatePage';
 
 import FacultyProjectsPage from './pages/faculty/ProjectsPage';
 import FacultyStudentListPage from './pages/faculty/StudentListPage';
@@ -17,6 +22,8 @@ import UniversityProblemsPage from './pages/faculty/UniversityProblemsPage';
 import UniversityAdminDashboardPage from './pages/university-admin/DashboardPage';
 import IncomingProblemsPage from './pages/university-admin/IncomingProblemsPage';
 import AllocationsPage from './pages/university-admin/AllocationsPage';
+import MOUPage from './pages/university-admin/MOUPage';
+import UniversityPastProjectsPage from './pages/university-admin/PastProjectsPage';
 
 import GovernmentDashboardPage from './pages/government/DashboardPage';
 import ActiveProblemsPage from './pages/government/ActiveProblemsPage';
@@ -47,10 +54,13 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
+      <Route path="/login" element={<LoginPage defaultMode="login" />} />
+      <Route path="/signup" element={<LoginPage defaultMode="signup" />} />
 
       {/* Citizen */}
       <Route element={<ProtectedRoute allowRoles={['citizen']}><DashboardLayout /></ProtectedRoute>}>
         <Route path="/citizen/problems" element={<ProblemsPage />} />
+        <Route path="/citizen/all-problems" element={<AllProblemsPage />} />
         <Route path="/citizen/add-problem" element={<AddProblemPage />} />
       </Route>
 
@@ -63,6 +73,9 @@ export default function App() {
       {/* Student */}
       <Route element={<ProtectedRoute allowRoles={['student']}><DashboardLayout /></ProtectedRoute>}>
         <Route path="/student/projects" element={<StudentProjectsPage />} />
+        <Route path="/student/university-problems" element={<StudentUniversityProblemsPage />} />
+        <Route path="/student/my-projects" element={<StudentMyProjectsPage />} />
+        <Route path="/student/certificate" element={<StudentCertificatePage />} />
       </Route>
 
       {/* Faculty */}
@@ -76,7 +89,10 @@ export default function App() {
       <Route element={<ProtectedRoute allowRoles={['university_admin', 'university-admin']}><DashboardLayout /></ProtectedRoute>}>
         <Route path="/university-admin/dashboard" element={<UniversityAdminDashboardPage />} />
         <Route path="/university-admin/problems" element={<IncomingProblemsPage />} />
+        <Route path="/university-admin/incoming-problems" element={<Navigate to="/university-admin/problems" replace />} />
         <Route path="/university-admin/allocations" element={<AllocationsPage />} />
+        <Route path="/university-admin/mou" element={<MOUPage />} />
+        <Route path="/university-admin/past-projects" element={<UniversityPastProjectsPage />} />
       </Route>
 
       {/* Government */}
@@ -99,7 +115,7 @@ export default function App() {
       </Route>
 
       {/* Shared across roles */}
-      <Route element={<ProtectedRoute allowRoles={['student', 'industry_employee', 'industry']}><DashboardLayout /></ProtectedRoute>}>
+      <Route element={<ProtectedRoute allowRoles={['student', 'faculty', 'industry_employee', 'industry', 'government']}><DashboardLayout /></ProtectedRoute>}>
         <Route path="/leaderboard" element={<LeaderboardPage />} />
       </Route>
 

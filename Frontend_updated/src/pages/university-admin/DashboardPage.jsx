@@ -90,14 +90,24 @@ export default function UniversityAdminDashboardPage() {
 
       <div className="grid">
         <div className="card">
-          <h3>{<Trans text="Review Incoming Problems" />}</h3>
-          <p className="problem-desc">{<Trans text="Review problem statements sent by Government and Accept or Reject them." />}</p>
-          <button className="btn btn-primary btn-sm" onClick={() => navigate('/university-admin/problems')}>{<Trans text="Go to Incoming Problems" />}</button>
+          <h3>{<Trans text="Review New Problems" />}</h3>
+          <p className="problem-desc">{<Trans text="Review problem statements sent to your university and Approve or Reject them." />}</p>
+          <button className="btn btn-primary btn-sm" onClick={() => navigate('/university-admin/problems')}>{<Trans text="Go to New Problems" />}</button>
         </div>
         <div className="card">
           <h3>{<Trans text="Manage Allocations" />}</h3>
           <p className="problem-desc">{<Trans text="Monitor allocation priority/deadline status and allocate accepted problems to faculty." />}</p>
           <button className="btn btn-primary btn-sm" onClick={() => navigate('/university-admin/allocations')}>{<Trans text="Go to Allocations" />}</button>
+        </div>
+        <div className="card">
+          <h3>{<Trans text="Memorandum of Understanding (MOU)" />}</h3>
+          <p className="problem-desc">{<Trans text="Review official tripartite collaboration agreements and industry partnerships." />}</p>
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate('/university-admin/mou')}>{<Trans text="Go to MOU" />}</button>
+        </div>
+        <div className="card">
+          <h3>{<Trans text="Past Projects" />}</h3>
+          <p className="problem-desc">{<Trans text="View archived record of all successfully solved and deployed challenges." />}</p>
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate('/university-admin/past-projects')}>{<Trans text="Go to Past Projects" />}</button>
         </div>
       </div>
     </div>

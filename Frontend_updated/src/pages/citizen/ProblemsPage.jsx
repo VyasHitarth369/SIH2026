@@ -4,9 +4,8 @@ import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
 import { useProblems } from '../../context/ProblemsContext';
 import { useToast } from '../../context/ToastContext';
-import { useMemo, useState } from 'react';
-import TrackingStepper from '../../components/shared/TrackingStepper';
-import { matchingService } from '../../services/matchingService';
+import { useEffect, useMemo, useState } from 'react';
+import Milestones from '../../components/shared/Milestones.jsx';
 
 const priorityBadgeClass = {
   high: 'badge-coral',
@@ -26,51 +25,38 @@ const allocationStatusLabel = {
 export default function ProblemsPage() {
   const { t, lang } = useLanguage();
   const { user } = useAuth();
-  const { problems, voteProblem, hasVoted, addFeedback } = useProblems();
+  const { myProblems, refreshMyProblems, isLoadingMyProblems, voteProblem, hasVoted, addFeedback } = useProblems();
   const { showToast } = useToast();
   const navigate = useNavigate();
   const [feedbackDrafts, setFeedbackDrafts] = useState({});
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all'); // all | unsolved | solved | high | active
-  const [matchesByChallenge, setMatchesByChallenge] = useState({});
-  const [loadingMatches, setLoadingMatches] = useState({});
-  const [expandedMatches, setExpandedMatches] = useState({});
+  const [expandedMilestones, setExpandedMilestones] = useState({});
 
-  const toggleMatches = async (challengeId) => {
-    if (expandedMatches[challengeId]) {
-      setExpandedMatches((prev) => ({ ...prev, [challengeId]: false }));
-      return;
-    }
-    setExpandedMatches((prev) => ({ ...prev, [challengeId]: true }));
-    if (!matchesByChallenge[challengeId]) {
-      try {
-        setLoadingMatches((prev) => ({ ...prev, [challengeId]: true }));
-        const list = await matchingService.fetchUniversityMatches(challengeId);
-        setMatchesByChallenge((prev) => ({ ...prev, [challengeId]: Array.isArray(list) ? list : [] }));
-      } catch (err) {
-        console.warn(`Could not load matches for ${challengeId}:`, err.message);
-      } finally {
-        setLoadingMatches((prev) => ({ ...prev, [challengeId]: false }));
-      }
-    }
+  useEffect(() => {
+    refreshMyProblems();
+  }, [refreshMyProblems]);
+
+  const toggleMilestones = (id) => {
+    setExpandedMilestones((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return problems.filter((p) => {
+    return myProblems.filter((p) => {
       if (statusFilter === 'unsolved' && p.type !== 'unsolved') return false;
       if (statusFilter === 'solved' && p.type !== 'solved') return false;
       if (statusFilter === 'high' && p.priorityLevel !== 'high') return false;
       if (statusFilter === 'active' && !(p.type === 'unsolved' && p.allocation?.allocatedTo && p.faculty)) return false;
       if (!q) return true;
-      const title = (p.title[lang] || p.title.hi || '').toLowerCase();
-      const desc = (p.desc[lang] || p.desc.hi || '').toLowerCase();
+      const title = (p.title?.[lang] || p.title?.en || p.title?.hi || '').toLowerCase();
+      const desc = (p.desc?.[lang] || p.desc?.en || p.desc?.hi || '').toLowerCase();
       return title.includes(q) || desc.includes(q);
     });
-  }, [problems, search, statusFilter, lang]);
+  }, [myProblems, search, statusFilter, lang]);
 
-  const handleVote = (id) => {
-    const recorded = voteProblem(id);
+  const handleVote = async (id) => {
+    const recorded = await voteProblem(id);
     showToast(recorded ? t.voted : t.alreadyVoted);
   };
 
@@ -112,18 +98,31 @@ export default function ProblemsPage() {
       <div className="stack">
         {filtered.map((p) => {
           const voted = hasVoted(p.id);
-          const isActiveProject = p.type === 'unsolved' && p.allocation?.allocatedTo && p.faculty;
-          const isUniSelected =
-            p.status === 'university_selected' || p.rawSupabase?.status === 'university_selected';
+          const isSolved = p.type === 'solved' || p.status === 'solved' || p.status === 'accepted_existing_solution';
+          const isActiveProject = !isSolved && (
+            (p.type === 'unsolved' && p.allocation?.allocatedTo) ||
+            p.status === 'university_selected' ||
+            p.status === 'active' ||
+            p.rawSupabase?.status === 'university_selected' ||
+            p.rawSupabase?.status === 'active'
+          );
+          const isUnsolved = !isSolved && !isActiveProject;
+
+          const uniName = p.allocation?.allocatedTo || p.university || p.university_name || (isActiveProject ? 'Pending Allocation' : null);
+          const indName = (p.suggestedIndustries && p.suggestedIndustries.length > 0)
+            ? p.suggestedIndustries.join(', ')
+            : (p.industry || (isActiveProject ? 'Pending Assignment' : null));
+
           return (
             <div className="card" key={p.id}>
               <div className="problem-card__head">
-                <span className={`badge ${p.type === 'solved' ? 'badge-teal' : 'badge-amber'}`}>
-                  {p.type === 'solved' ? `✅ ${t.solved.toUpperCase()}` : t.unsolved.toUpperCase()}
+                <span className={`badge ${isSolved ? 'badge-teal' : isActiveProject ? 'badge-teal' : 'badge-amber'}`}>
+                  {isSolved
+                    ? `✅ ${(t.solved || 'SOLVED').toUpperCase()}`
+                    : isActiveProject
+                    ? `🎓 ${lang === 'hi' ? 'सक्रिय परियोजना' : 'ACTIVE PROJECT'}`
+                    : (t.unsolved || 'UNSOLVED').toUpperCase()}
                 </span>
-                {isUniSelected && (
-                  <span className="badge badge-teal">🎓 {<Trans text="University Assigned" />}</span>
-                )}
                 {p.source === 'government' ? (
                   <span className="badge badge-violet">{t.govtProblem || '🏛️ Government Problem'}</span>
                 ) : p.source === 'industry' ? (
@@ -131,146 +130,118 @@ export default function ProblemsPage() {
                 ) : (
                   <span className="badge badge-gray">{t.citProblem || '👨‍🌾 Citizen Problem'}</span>
                 )}
-                {p.type !== 'solved' && (
+                {!isSolved && (
                   <span className={`badge ${priorityBadgeClass[p.priorityLevel] || 'badge-blue'} badge-priority`}>
-                    🤖 {t.aiPriority}: {<Trans text={p.aiPriority || ''} />}
+                    🤖 {t.aiPriority}: <Trans text={p.aiPriority || ''} />
                   </span>
                 )}
               </div>
 
-              <h3 className="problem-title">{p.title[lang] || p.title.hi}</h3>
-              <p className="problem-desc">{p.desc[lang] || p.desc.hi}</p>
-              <div className="problem-meta">📍 {t.location}: {p.loc} · {t.scope}: <strong>{<Trans text={p.scope || ''} />}</strong></div>
+              <h3 className="problem-title">{p.title?.[lang] || p.title?.en || p.title?.hi || p.title}</h3>
+              <p className="problem-desc">{p.desc?.[lang] || p.desc?.en || p.desc?.hi || p.desc}</p>
+              <div className="problem-meta">
+                <span>📍 <strong>{t.location}:</strong> {p.loc}</span>
+                <span>🎯 <strong>{t.scope}:</strong> <Trans text={p.scope || ''} /></span>
+              </div>
 
-              {isUniSelected && (
-                <div style={{ marginTop: 8, padding: '8px 12px', background: '#ecfdf5', borderRadius: 6, border: '1px solid #a7f3d0' }}>
-                  🎓 <strong>{<Trans text="Assigned University:" />}</strong>{' '}
-                  {<Trans text="Top-ranked matched institution officially selected and allocated." />}
-                </div>
-              )}
-
-              {p.id && (
-                <div style={{ marginTop: 10 }}>
-                  <button
-                    type="button"
-                    className="btn btn-light btn-sm"
-                    onClick={() => toggleMatches(p.id)}
-                  >
-                    🏛️ {expandedMatches[p.id] ? <Trans text="Hide Matched Universities" /> : <Trans text="View Matched Universities" />}
-                  </button>
-                </div>
-              )}
-
-              {expandedMatches[p.id] && (
-                <div className="section-box section-box--muted" style={{ marginTop: 10 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <h4 style={{ margin: 0 }}>🎯 <Trans text="Deterministic University Matches" /></h4>
-                    {loadingMatches[p.id] && <small style={{ color: '#6b7280' }}>Loading matches...</small>}
-                  </div>
-                  {matchesByChallenge[p.id]?.length > 0 ? (
-                    <div className="stack" style={{ gap: 8, marginTop: 8 }}>
-                      {matchesByChallenge[p.id].map((m) => {
-                        const isSelected = m.status === 'selected';
-                        return (
-                          <div
-                            key={m.match_id || m.university_id}
-                            style={{
-                              background: isSelected ? '#f0fdf4' : '#ffffff',
-                              border: isSelected ? '1px solid #86efac' : '1px solid #e5e7eb',
-                              borderRadius: 6,
-                              padding: '10px 14px',
-                            }}
-                          >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                              <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>
-                                #{m.rank} {m.university_name || m.university_id}
-                              </span>
-                              <div>
-                                <span
-                                  className={`badge ${
-                                    isSelected
-                                      ? 'badge-teal'
-                                      : m.status === 'accepted'
-                                      ? 'badge-blue'
-                                      : m.status === 'rejected'
-                                      ? 'badge-coral'
-                                      : 'badge-gray'
-                                  }`}
-                                  style={{ marginRight: 6 }}
-                                >
-                                  {isSelected ? '🏆 Assigned' : m.status}
-                                </span>
-                                <span className="badge badge-teal">
-                                  {Number(m.match_score).toFixed(1)}% Match
-                                </span>
-                              </div>
-                            </div>
-                            <p style={{ margin: 0, fontSize: '0.85rem', color: '#4b5563', fontStyle: 'italic' }}>
-                              💡 {m.match_reason}
-                            </p>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    !loadingMatches[p.id] && (
-                      <p style={{ color: '#6b7280', fontSize: '0.85rem', margin: '4px 0' }}>
-                        <Trans text="No matched universities recorded for this challenge yet." />
-                      </p>
-                    )
-                  )}
-                </div>
-              )}
-
+              {/* Working/Active: University Name and Industry Name (No private faculty/student details) */}
               {isActiveProject && (
-                <div className="section-box section-box--muted" style={{ marginTop: 10 }}>
-                  <h4>{<Trans text="Active Project — In Progress" />}</h4>
-                  <div className="problem-meta">{<Trans text="🏫 University:" />} <strong>{<Trans text={p.allocation.allocatedTo} />}</strong></div>
-                  <div className="problem-meta">{<Trans text="👨‍🏫 Faculty:" />} <strong>{p.faculty?.name}</strong></div>
-                  <div className="problem-meta">{<Trans text="👨‍🎓 Students Involved:" />} <strong>{p.students?.length || 0}</strong></div>
-                  {p.suggestedIndustries?.length > 0 && (
-                    <div className="problem-meta">{<Trans text="🏢 Industry Involvement:" />} <strong>{p.suggestedIndustries.join(', ')}</strong></div>
-                  )}
-                  <div className="problem-meta">{<Trans text="⏳ Status:" />} <span className="badge badge-blue">{<Trans text={allocationStatusLabel[p.allocation.status] || p.allocation.status} />}</span></div>
+                <div className="section-box section-box--muted" style={{ marginTop: 12 }}>
+                  <h4 style={{ marginBottom: 8 }}><Trans text="Active Project — In Progress" /></h4>
+                  <div className="problem-meta">
+                    <span>🏫 <strong><Trans text="Assigned University:" /></strong> <Trans text={uniName || 'Pending Allocation'} /></span>
+                    <span>🏢 <strong><Trans text="Assigned Industry:" /></strong> <Trans text={indName || 'Pending Assignment'} /></span>
+                  </div>
                 </div>
               )}
 
-              {p.type === 'solved' ? (
-                <div className="feedback-block">
-                  <h4>{t.feedbackHead}</h4>
-                  {(p.feedbacks || []).map((f, i) => (
-                    <div className="feedback-item" key={i}>
-                      <strong>{f.user}:</strong> {'⭐'.repeat(f.rating)} — “{f.comment}”
+              {/* Solved: University Name, Industry Name, and Existing Feedback Feature */}
+              {isSolved && (
+                <>
+                  <div className="section-box section-box--muted" style={{ marginTop: 12 }}>
+                    <h4 style={{ marginBottom: 8 }}><Trans text="Solution Delivered" /></h4>
+                    <div className="problem-meta">
+                      <span>🏫 <strong><Trans text="Assigned University:" /></strong> <Trans text={uniName || 'Resolved'} /></span>
+                      <span>🏢 <strong><Trans text="Assigned Industry:" /></strong> <Trans text={indName || 'Resolved'} /></span>
                     </div>
-                  ))}
-                  <div className="feedback-form">
-                    <input
-                      type="text"
-                      placeholder={t.feedbackPh}
-                      value={feedbackDrafts[p.id] || ''}
-                      onChange={(e) => setFeedbackDrafts((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                      onKeyDown={(e) => e.key === 'Enter' && submitFeedback(p.id)}
-                    />
-                    <button className="btn btn-success btn-sm" onClick={() => submitFeedback(p.id)}>{t.feedbackSubmit}</button>
                   </div>
-                </div>
-              ) : (
+
+                  <div className="feedback-block">
+                    <h4>{t.feedbackHead}</h4>
+                    {(p.feedbacks || []).map((f, i) => (
+                      <div className="feedback-item" key={i}>
+                        <strong>{f.user}:</strong> {'⭐'.repeat(f.rating)} — “{f.comment}”
+                      </div>
+                    ))}
+                    <div className="feedback-form">
+                      <input
+                        type="text"
+                        placeholder={t.feedbackPh}
+                        value={feedbackDrafts[p.id] || ''}
+                        onChange={(e) => setFeedbackDrafts((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                        onKeyDown={(e) => e.key === 'Enter' && submitFeedback(p.id)}
+                      />
+                      <button className="btn btn-success btn-sm" onClick={() => submitFeedback(p.id)}>{t.feedbackSubmit}</button>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Voting for Unsolved / Active problems */}
+              {!isSolved && (
                 <div className="problem-actions">
                   <button className="btn btn-light" disabled={voted} onClick={() => handleVote(p.id)}>
                     👍 {t.vote}: <strong>{p.votes}</strong>{voted ? ' ✓' : ''}
                   </button>
-                  <span className="badge badge-blue">{t.scope}: {<Trans text={p.scope} />}</span>
+                  <span className="badge badge-blue">{t.scope}: <Trans text={p.scope} /></span>
                 </div>
               )}
 
-              <div className="tracking-box tracking-box--compact">
-                <TrackingStepper step={p.trackingStep} labels={t} />
+              {/* Standardized 7-Stage Milestone View (Read-Only for Citizens) */}
+              <div style={{ marginTop: 12 }}>
+                <button
+                  type="button"
+                  className="btn btn-light btn-sm"
+                  onClick={() => toggleMilestones(p.id)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                >
+                  📊 {expandedMilestones[p.id] ? <Trans text="Hide Milestones" /> : <Trans text="View Milestones" />}
+                </button>
               </div>
+
+              {expandedMilestones[p.id] && (
+                <Milestones problem={p} isCitizen={true} />
+              )}
             </div>
           );
         })}
 
-        {filtered.length === 0 && <div className="card empty-state"><span className="empty-state__icon">🗂️</span>{t.noResults}</div>}
+        {isLoadingMyProblems ? (
+          <div className="card" style={{ textAlign: 'center', padding: '40px 20px', color: '#6b7280' }}>
+            <span style={{ fontSize: '2rem', display: 'block', marginBottom: 8 }}>⏳</span>
+            {lang === 'hi' ? 'आपकी समस्याएं लोड हो रही हैं…' : 'Loading your submitted problems…'}
+          </div>
+        ) : myProblems.length === 0 ? (
+          <div className="card empty-state" style={{ textAlign: 'center', padding: '48px 24px' }}>
+            <span className="empty-state__icon" style={{ fontSize: '3rem', marginBottom: 12 }}>📋</span>
+            <h3 style={{ margin: '0 0 8px 0', fontSize: '1.25rem', color: '#1f2937' }}>
+              {lang === 'hi' ? 'आपने अभी तक कोई समस्या दर्ज नहीं की है' : "You haven't submitted any problems yet"}
+            </h3>
+            <p style={{ color: '#6b7280', maxWidth: 460, margin: '0 auto 20px auto', fontSize: '0.95rem' }}>
+              {lang === 'hi'
+                ? 'अपने क्षेत्र की किसी नागरिक समस्या की रिपोर्ट करें और समाधान हेतु विश्वविद्यालय शोधकर्ताओं से जुड़ें।'
+                : 'Report a civic problem in your area to connect with universities and track the solution lifecycle.'}
+            </p>
+            <button className="btn btn-primary" onClick={() => navigate('/citizen/add-problem')}>
+              {lang === 'hi' ? '➕ पहली समस्या दर्ज करें' : '➕ Submit Your First Problem'}
+            </button>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="card empty-state">
+            <span className="empty-state__icon">🗂️</span>
+            {t.noResults}
+          </div>
+        ) : null}
       </div>
     </div>
   );

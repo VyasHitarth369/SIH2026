@@ -1,8 +1,8 @@
 import Trans from './Trans.jsx';
 import { getMilestones } from '../../utils/milestones';
 
-export default function Milestones({ problem }) {
-  const milestones = getMilestones(problem);
+export default function Milestones({ problem, isCitizen = false }) {
+  const milestones = getMilestones(problem, isCitizen);
   const doneCount = milestones.filter((m) => m.done).length;
 
   return (
@@ -23,7 +23,7 @@ export default function Milestones({ problem }) {
                   <div className="milestone-item__meta">
                     {m.date && <span>{m.date}</span>}
                     {m.date && m.detail && ' · '}
-                    {m.detail && <span>{m.detail}</span>}
+                    {m.detail && <span><Trans text={m.detail} /></span>}
                   </div>
                 )}
               </div>

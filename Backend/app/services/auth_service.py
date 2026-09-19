@@ -210,102 +210,11 @@ class AuthService:
                         self.client.table("profiles").update({"role": role_name}).eq("user_id", user_id).execute()
                         return
 
-            # 2. Check Supabase Auth metadata for registration role
-            try:
-                auth_user_res = self.client.auth.admin.get_user_by_id(user_id)
-                auth_user = getattr(auth_user_res, "user", None)
-                meta = getattr(auth_user, "user_metadata", None) or {}
-            except Exception:
-                meta = {}
-
-            meta_role = meta.get("role")
-            if not meta_role or meta_role == "citizen" or meta_role not in VALID_ROLES:
-                return
-
-            # Auto-provision stakeholder record based on registration metadata
-            if meta_role == "student":
-                stu_id = meta.get("studentId") or f"STU-{user_id[:8].upper()}"
-                uni_id = self._resolve_university_id(meta.get("university"))
-                s_data = {
-                    "student_id": stu_id,
-                    "university_id": uni_id,
-                    "student_name": meta.get("full_name") or (email.split("@")[0] if email else "Student"),
-                    "department": meta.get("department") or "Engineering",
-                    "course": meta.get("course") or "B.Tech",
-                    "technologies": meta.get("technologies") if isinstance(meta.get("technologies"), list) else [meta.get("technologies")] if meta.get("technologies") else ["Python"],
-                    "skills": meta.get("skills") if isinstance(meta.get("skills"), list) else [meta.get("skills")] if meta.get("skills") else ["Programming"],
-                    "interests": [meta.get("domain")] if meta.get("domain") else [],
-                    "email": email or meta.get("email"),
-                    "user_id": user_id,
-                }
-                self.client.table("students").upsert(s_data).execute()
-                self.client.table("profiles").update({"role": "student"}).eq("user_id", user_id).execute()
-
-            elif meta_role == "government":
-                gov_id = meta.get("authorityId") or f"GOV-{user_id[:8].upper()}"
-                g_data = {
-                    "authority_id": gov_id,
-                    "officer_name": meta.get("officerName") or meta.get("full_name") or "Government Officer",
-                    "department": meta.get("department") or "Public Administration",
-                    "designation": meta.get("designation") or "Officer",
-                    "district": meta.get("district") or "Ranchi",
-                    "office_name": meta.get("officeName") or "Department Office",
-                    "email": email or meta.get("email"),
-                    "user_id": user_id,
-                }
-                self.client.table("government_authorities").upsert(g_data).execute()
-                self.client.table("profiles").update({"role": "government"}).eq("user_id", user_id).execute()
-
-            elif meta_role == "university_admin":
-                adm_id = meta.get("adminId") or f"ADM-{user_id[:8].upper()}"
-                uni_id = self._resolve_university_id(meta.get("university"))
-                u_data = {
-                    "admin_id": adm_id,
-                    "university_id": uni_id,
-                    "admin_name": meta.get("full_name") or "University Administrator",
-                    "designation": meta.get("designation") or "Dean / SPOC",
-                    "email": email or meta.get("email"),
-                    "user_id": user_id,
-                    "verification_status": "verified",
-                }
-                self.client.table("university_admins").upsert(u_data).execute()
-                self.client.table("profiles").update({"role": "university_admin"}).eq("user_id", user_id).execute()
-
-            elif meta_role == "faculty":
-                fac_id = meta.get("facultyId") or f"FAC-{user_id[:8].upper()}"
-                uni_id = self._resolve_university_id(meta.get("university"))
-                f_data = {
-                    "faculty_id": fac_id,
-                    "university_id": uni_id,
-                    "faculty_name": meta.get("full_name") or "Faculty Member",
-                    "department": meta.get("department") or "Computer Science",
-                    "designation": meta.get("designation") or "Associate Professor",
-                    "expertise": meta.get("expertise") or "Technology & Applied Research",
-                    "email": email or meta.get("email"),
-                    "user_id": user_id,
-                }
-                self.client.table("faculty").upsert(f_data).execute()
-                self.client.table("profiles").update({"role": "faculty"}).eq("user_id", user_id).execute()
-
-            elif meta_role == "industry_employee":
-                emp_id = meta.get("employeeId") or f"EMP-{user_id[:8].upper()}"
-                ind_id = self._resolve_industry_id(meta.get("company"))
-                desig = meta.get("designation") or "Technical Specialist"
-                is_spoc = bool(meta.get("is_spoc") or "spoc" in desig.lower())
-                i_data = {
-                    "employee_id": emp_id,
-                    "industry_id": ind_id,
-                    "employee_name": meta.get("full_name") or "Industry Employee",
-                    "designation": desig,
-                    "department": meta.get("department") or "R&D",
-                    "email": email or meta.get("email"),
-                    "user_id": user_id,
-                    "verification_status": "verified",
-                    "approval_authority": is_spoc,
-                }
-                self.client.table("industry_employees").upsert(i_data).execute()
-                self.client.table("profiles").update({"role": "industry_employee"}).eq("user_id", user_id).execute()
-
+            # 2. Privileged roles MUST NOT be auto-provisioned from user_metadata.role.
+            # Authoritative stakeholder assignment strictly requires an existing verified
+            # record in stakeholder tables (linked above via user_id or email).
+            # Registration metadata captures user signup preferences only.
+            return
         except Exception:
             pass
 

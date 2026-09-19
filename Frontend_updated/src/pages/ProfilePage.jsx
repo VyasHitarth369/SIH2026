@@ -5,6 +5,8 @@ import { useLanguage } from '../context/LanguageContext';
 import { useProblems } from '../context/ProblemsContext';
 import { useToast } from '../context/ToastContext';
 import { roleFieldsConfig } from '../components/auth/roleFieldsConfig';
+import { jharkhandCities } from '../data/locations';
+import { STUDENT_APPROVED_UNIVERSITIES } from '../data/orgData';
 
 const roleTitles = {
   citizen: 'Citizen',
@@ -46,15 +48,24 @@ export default function ProfilePage() {
   const startEdit = () => {
     setDraftName(user.name || '');
     setDraftEmail(user.email || '');
-    setDraft({ ...(user.profile || {}) });
+    setDraft({ ...(user.profile || {}), city: user.profile?.city || user.city || '' });
     setEditing(true);
   };
 
   const save = () => {
+    if (!draft.city || !draft.city.trim()) {
+      showToast('Please select your city.');
+      return;
+    }
+    if (user.role === 'student' && (!draft.university || !STUDENT_APPROVED_UNIVERSITIES.includes(draft.university))) {
+      showToast('Please select an approved university.');
+      return;
+    }
     updateProfile({
       name: draftName.trim() || user.name,
       email: draftEmail.trim() || user.email,
       ...draft,
+      city: draft.city.trim(),
     });
     setEditing(false);
     showToast(<Trans text="Profile updated." />);
@@ -154,7 +165,7 @@ export default function ProfilePage() {
             <Field label="Full Name" value={user.name} />
             <Field label="Email Address" value={user.email} />
             <Field label="Role" value={roleTitles[user.role] || user.role} />
-            {user.role === 'citizen' && <Field label="City" value={p.city} />}
+            <Field label="City" value={p.city || user.city} />
             {roleFields.map((f) => (
               <Field key={f.key} label={f.label} value={p[f.key]} />
             ))}
@@ -174,12 +185,21 @@ export default function ProfilePage() {
               <label><Trans text="Email Address" /> *</label>
               <input type="email" value={draftEmail} onChange={(e) => setDraftEmail(e.target.value)} required />
             </div>
-            {user.role === 'citizen' && (
-              <div className="field">
-                <label><Trans text="City" /></label>
-                <input type="text" value={draft.city || ''} onChange={(e) => setDraft((d) => ({ ...d, city: e.target.value }))} />
-              </div>
-            )}
+            <div className="field">
+              <label><Trans text="City" /> *</label>
+              <select
+                value={draft.city || ''}
+                onChange={(e) => setDraft((d) => ({ ...d, city: e.target.value }))}
+                required
+              >
+                <option value="">{<Trans text="Select your city…" />}</option>
+                {jharkhandCities.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c[lang] || c.en}
+                  </option>
+                ))}
+              </select>
+            </div>
             {roleFields.map((f) => (
               <div className="field" key={f.key}>
                 <label><Trans text={f.label} />{f.required ? ' *' : ''}</label>

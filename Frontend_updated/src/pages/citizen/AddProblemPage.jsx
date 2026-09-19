@@ -27,6 +27,56 @@ export default function AddProblemPage() {
   const [attachments, setAttachments] = useState({ photo: null, video: null, document: null });
   const [submitting, setSubmitting] = useState(false);
 
+  // Optional GPS Location State
+  const [gpsCoords, setGpsCoords] = useState(null);
+  const [gpsStatus, setGpsStatus] = useState(''); // '', 'detecting', 'captured', 'denied', 'unsupported'
+  const [gpsMessage, setGpsMessage] = useState('');
+
+  const handleDetectLocation = () => {
+    if (!navigator.geolocation) {
+      setGpsStatus('unsupported');
+      setGpsMessage(
+        lang === 'hi'
+          ? 'आपके ब्राउज़र में जीपीएस सेवा उपलब्ध नहीं है'
+          : 'Geolocation is not supported by your browser.'
+      );
+      return;
+    }
+    setGpsStatus('detecting');
+    setGpsMessage(lang === 'hi' ? 'स्थान खोज रहे हैं…' : 'Detecting your location…');
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        setGpsCoords({ lat, lng });
+        setGpsStatus('captured');
+        setGpsMessage(
+          lang === 'hi'
+            ? `📍 जीपीएस निर्देशांक: ${lat.toFixed(4)}°, ${lng.toFixed(4)}°`
+            : `📍 GPS captured: ${lat.toFixed(4)}°, ${lng.toFixed(4)}°`
+        );
+      },
+      (error) => {
+        setGpsStatus('denied');
+        if (error.code === 1) { // PERMISSION_DENIED
+          setGpsMessage(
+            lang === 'hi'
+              ? 'स्थान अनुमति अस्वीकृत (वैकल्पिक)। कृपया नीचे पता भरें।'
+              : 'Location permission denied (optional). Please enter address manually.'
+          );
+        } else {
+          setGpsMessage(
+            lang === 'hi'
+              ? 'स्थान प्राप्त करने में असमर्थ (वैकल्पिक)'
+              : 'Unable to retrieve location (optional).'
+          );
+        }
+      },
+      { timeout: 10000, enableHighAccuracy: true }
+    );
+  };
+
   const setAttachment = (kind) => (value) => {
     setAttachments((prev) => ({ ...prev, [kind]: value }));
   };
@@ -51,7 +101,8 @@ export default function AddProblemPage() {
       .filter(([, v]) => v)
       .map(([kind, v]) => ({ kind, ...v }));
 
-    const composedLoc = `${address.trim()}, ${cityLabel(city, lang)} - ${pincode.trim()}`;
+    const gpsSuffix = gpsCoords ? ` (GPS: ${gpsCoords.lat.toFixed(4)}, ${gpsCoords.lng.toFixed(4)})` : '';
+    const composedLoc = `${address.trim()}, ${cityLabel(city, lang)} - ${pincode.trim()}${gpsSuffix}`;
 
     const isGov = user?.role === 'government';
     const isInd = user?.role === 'industry';
@@ -147,6 +198,32 @@ export default function AddProblemPage() {
 
         <div className="section-box">
           <h4>{t.locationHead}</h4>
+
+          {/* OPTIONAL GPS LOCATION DETECTION */}
+          <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn btn-light btn-sm"
+              onClick={handleDetectLocation}
+              disabled={gpsStatus === 'detecting'}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              📍 {gpsStatus === 'detecting'
+                ? (lang === 'hi' ? 'स्थान खोज रहे हैं…' : 'Detecting…')
+                : (lang === 'hi' ? 'वर्तमान स्थान का उपयोग करें (वैकल्पिक)' : 'Use My Current Location (Optional)')}
+            </button>
+            {gpsMessage && (
+              <span
+                style={{
+                  fontSize: '0.85rem',
+                  color: gpsStatus === 'captured' ? '#059669' : '#6b7280',
+                  fontWeight: gpsStatus === 'captured' ? 600 : 400,
+                }}
+              >
+                {gpsMessage}
+              </span>
+            )}
+          </div>
 
           <div className="grid grid--location">
             <div className="field">

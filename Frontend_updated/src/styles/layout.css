@@ -77,13 +77,12 @@
 
 /* ---- Problem / listing content ---- */
 .stack > .card:last-child{margin-bottom:0}
-.problem-title{margin:8px 0;font-size:17px;font-weight:800;color:var(--ink)}
-.problem-desc{color:var(--text-muted);font-size:14px}
-.problem-meta{font-size:12.5px;color:var(--text-muted);margin-top:6px}
-.problem-actions{display:flex;align-items:center;justify-content:space-between;margin-top:14px;flex-wrap:wrap;gap:10px}
-
-.problem-card__head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap}
+.problem-card__head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:6px}
 .badge-priority{white-space:nowrap}
+.problem-title{margin:6px 0 8px;font-size:18px;font-weight:700;color:var(--ink);line-height:1.4;letter-spacing:-0.01em}
+.problem-desc{color:var(--text-muted);font-size:14px;line-height:1.55;margin-bottom:10px}
+.problem-meta{font-size:13px;color:var(--text-muted);margin-top:6px;line-height:1.5;display:flex;flex-wrap:wrap;gap:12px}
+.problem-actions{display:flex;align-items:center;justify-content:space-between;margin-top:14px;flex-wrap:wrap;gap:10px}
 
 .search-input{
   width:100%;padding:11px 14px;border:1px solid var(--border);border-radius:10px;
@@ -408,3 +407,42 @@
   font-size:12px;font-weight:700;padding:5px 10px;border-radius:8px;margin-top:6px;
 }
 .attachment-chip svg{flex-shrink:0}
+
+/* ---- Certificate Styling & Print Styles ---- */
+.certificate-frame {
+  position: relative;
+  overflow: hidden;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .certificate-printable-container,
+  .certificate-printable-container .certificate-frame,
+  .certificate-printable-container .certificate-frame * {
+    visibility: visible;
+  }
+  .certificate-printable-container {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
+  .certificate-printable-container button,
+  .certificate-printable-container .badge {
+    display: none !important;
+  }
+  .certificate-frame {
+    box-shadow: none !important;
+    margin: 0 auto !important;
+    border: 4px double #1E3A8A !important;
+    page-break-inside: avoid;
+  }
+}
+

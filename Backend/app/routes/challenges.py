@@ -13,7 +13,12 @@ from app.schemas.analysis import (
     ExistingSolutionDecisionRequest,
 )
 from app.schemas.challenge import ChallengeCreate, ChallengeResponse
-from app.schemas.project import UniversityResponseRequest, FinalizeSelectionRequest
+from app.schemas.project import (
+    UniversityResponseRequest,
+    FinalizeSelectionRequest,
+    MultiFacultyAssignRequest,
+    UniversityRejectRequest,
+)
 from app.schemas.industry import IndustryCollaborationResponse
 from app.services.auth_service import AuthenticatedUser
 from app.services.challenge_service import ChallengeService
@@ -48,7 +53,7 @@ def get_industry_workflow_service():
 )
 def create_challenge(
     challenge: ChallengeCreate,
-    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     service: ChallengeService = Depends(get_challenge_service),
 ):
     """Submits a new challenge, persists to Supabase 'challenges' table,
@@ -85,15 +90,17 @@ def list_challenges(
     city: Optional[str] = Query(None, description="Filter by city"),
     user_id: Optional[str] = Query(None, description="Filter by submitting user ID"),
     limit: int = Query(100, ge=1, le=500),
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
     service: ChallengeService = Depends(get_challenge_service),
 ):
-    """Lists challenges ordered by created_at descending."""
+    """Lists challenges ordered by created_at descending with public safety sanitization."""
     try:
         data = service.list_challenges(
             status_filter=status_filter,
             city_filter=city,
             user_id_filter=user_id,
             limit=limit,
+            user=current_user,
         )
         return {
             "success": True,
@@ -105,6 +112,38 @@ def list_challenges(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch challenges: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 2a. GET /api/challenges/mine — Citizen's Own Submitted Challenges
+# -----------------------------------------------------------------------------
+@router.get(
+    "/mine",
+    summary="List challenges submitted strictly by the authenticated citizen",
+)
+def list_my_challenges(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: ChallengeService = Depends(get_challenge_service),
+):
+    """Lists challenges owned by the authenticated citizen.
+
+    Server-side ownership is strictly enforced from the validated JWT token.
+    Never leaks other citizens' challenges or seed challenges.
+    """
+    try:
+        data = service.list_my_challenges(user=current_user)
+        return {
+            "success": True,
+            "total": len(data),
+            "data": data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch user challenges: {str(e)}",
         )
 
 
@@ -279,6 +318,65 @@ def handle_existing_solution_response(
         )
 
 
+# -----------------------------------------------------------------------------
+# 5b. POST /api/challenges/{challenge_id}/vote — Vote / Support a Challenge
+# -----------------------------------------------------------------------------
+@router.post(
+    "/{challenge_id}/vote",
+    summary="Support/upvote a challenge (1 vote per citizen enforced)",
+)
+def vote_challenge(
+    challenge_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: ChallengeService = Depends(get_challenge_service),
+):
+    """Records a citizen's vote for a challenge.
+
+    Enforces 1 vote per citizen per challenge in challenge_support.
+    """
+    try:
+        result = service.vote_challenge(challenge_id, current_user)
+        return {
+            "success": True,
+            "message": "Vote recorded successfully",
+            "data": result,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to vote on challenge: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 5c. GET /api/challenges/{challenge_id}/milestones — Read-only Project Milestones
+# -----------------------------------------------------------------------------
+@router.get(
+    "/{challenge_id}/milestones",
+    summary="Get read-only milestones for a challenge's associated project",
+)
+def get_challenge_milestones(
+    challenge_id: str,
+    service: ChallengeService = Depends(get_challenge_service),
+):
+    """Retrieves read-only project milestones for public tracking by citizens."""
+    try:
+        data = service.get_challenge_milestones(challenge_id)
+        return {
+            "success": True,
+            "data": data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch milestones for challenge '{challenge_id}': {str(e)}",
+        )
+
+
 def get_matching_service():
     """Dependency provider for MatchingService."""
     from app.services.matching_service import MatchingService
@@ -408,6 +506,126 @@ def respond_to_university_match(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to record university response: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 8b. POST /api/challenges/{challenge_id}/universities/approve
+# -----------------------------------------------------------------------------
+@router.post(
+    "/{challenge_id}/universities/approve",
+    summary="University administrator approves a newly routed challenge",
+)
+def approve_university_challenge(
+    challenge_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service=Depends(get_workflow_service),
+):
+    """Processes university administrator approval of a challenge statement."""
+    try:
+        admin_rec = service._resolve_university_admin_record(current_user)
+        uni_id = (admin_rec or {}).get("university_id")
+        if not uni_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: Could not resolve your authorized university institution.",
+            )
+        result = service.respond_to_university_match(
+            challenge_id=challenge_id,
+            university_id=uni_id,
+            action="accept",
+            user=current_user,
+            response_note="Approved by University Administration",
+        )
+        return {
+            "success": True,
+            "message": "Problem statement approved successfully.",
+            "data": result,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to approve challenge: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 8c. POST /api/challenges/{challenge_id}/universities/reject
+# -----------------------------------------------------------------------------
+@router.post(
+    "/{challenge_id}/universities/reject",
+    summary="University administrator rejects a newly routed challenge with mandatory reason",
+)
+def reject_university_challenge(
+    challenge_id: str,
+    reject_in: UniversityRejectRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service=Depends(get_workflow_service),
+):
+    """Processes university administrator rejection of a challenge statement with mandatory reason."""
+    try:
+        admin_rec = service._resolve_university_admin_record(current_user)
+        uni_id = (admin_rec or {}).get("university_id")
+        if not uni_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: Could not resolve your authorized university institution.",
+            )
+        result = service.respond_to_university_match(
+            challenge_id=challenge_id,
+            university_id=uni_id,
+            action="reject",
+            user=current_user,
+            response_note=reject_in.reason,
+        )
+        return {
+            "success": True,
+            "message": "Problem statement rejected with recorded feedback.",
+            "data": result,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reject challenge: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 8d. POST /api/challenges/{challenge_id}/universities/assign-faculty
+# -----------------------------------------------------------------------------
+@router.post(
+    "/{challenge_id}/universities/assign-faculty",
+    summary="Allocate one or more faculty mentors to an approved challenge and trigger industry matching",
+)
+def assign_university_faculty(
+    challenge_id: str,
+    assign_in: MultiFacultyAssignRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service=Depends(get_workflow_service),
+):
+    """Allocates faculty mentors (multiple selection supported) to an approved challenge."""
+    try:
+        result = service.allocate_faculty_and_advance(
+            challenge_id=challenge_id,
+            faculty_ids=assign_in.faculty_ids,
+            user=current_user,
+            project_title=assign_in.project_title,
+        )
+        return {
+            "success": True,
+            "message": result.get("message", "Faculty allocated successfully."),
+            "data": result,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to allocate faculty: {str(e)}",
         )
 
 

@@ -37,7 +37,7 @@ export default function TopBar() {
         {isAuthed && (
           <>
             <button className="btn btn-light btn-sm" onClick={() => navigate('/profile')}>{user?.full_name || user?.name || (lang === 'hi' ? 'मेरी प्रोफ़ाइल' : 'Profile')}</button>
-            <button className="btn btn-light" onClick={handleLogout}>{t.logout}</button>
+            <button className="btn btn-light" onClick={handleLogout}>{t.logout || (lang === 'hi' ? 'लॉग आउट' : 'Logout')}</button>
           </>
         )}
       </div>

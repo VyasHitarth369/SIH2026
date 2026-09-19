@@ -1,183 +1,432 @@
-import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../context/LanguageContext';
-import { useAuth, ROLES } from '../context/AuthContext';
-import { useToast } from '../context/ToastContext';
-import TopBar from '../components/layout/TopBar';
-import RoleFields, { validateRoleFields, normalizeRoleFields } from '../components/auth/RoleFields';
-import Trans from '../components/shared/Trans.jsx';
-
-const ROLE_HOME = {
-  citizen: '/citizen/problems',
-  student: '/student/projects',
-  faculty: '/faculty/projects',
-  university_admin: '/university-admin/dashboard',
-  'university-admin': '/university-admin/dashboard',
-  government: '/government/dashboard',
-  industry_employee: '/industry-employee/dashboard',
-  industry: '/industry-employee/dashboard',
-};
+import Trans, { useTranslate } from '../components/shared/Trans.jsx';
+import '../styles/home.css';
 
 export default function HomePage() {
-  const { t, lang } = useLanguage();
-  const { user, login, signup, homePath } = useAuth();
-  const { showToast } = useToast();
   const navigate = useNavigate();
+  const { lang, setLang } = useLanguage();
+  const t = useTranslate();
 
-  const [authMode, setAuthMode] = useState('login');
-  const [name, setName] = useState('');
-  const [city, setCity] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [role, setRole] = useState('citizen');
-  const [roleValues, setRoleValues] = useState({});
-  const [submitting, setSubmitting] = useState(false);
-
-  // If already authenticated, redirect to home
-  useEffect(() => {
-    if (user) {
-      navigate(homePath || '/');
-    }
-  }, [user, homePath, navigate]);
-
-  const setRoleValue = (key, value) => setRoleValues((prev) => ({ ...prev, [key]: value }));
-
-  const handleRoleChange = (newRole) => {
-    setRole(newRole);
-    setRoleValues({});
+  const handleLanguageChange = (e) => {
+    setLang(e.target.value);
   };
 
-  const handleSubmit = async (e) => {
+  const scrollToSection = (e, id) => {
     e.preventDefault();
-
-    if (!email.trim()) {
-      showToast(t.fillEmail);
-      return;
-    }
-    if (!password.trim()) {
-      showToast(t.fillPassword);
-      return;
-    }
-
-    setSubmitting(true);
-
-    if (authMode === 'login') {
-      try {
-        const session = await login({
-          email: email.trim(),
-          password,
-        });
-        showToast('Login successful');
-        navigate(ROLE_HOME[session.role] || homePath || '/');
-      } catch (err) {
-        showToast(<Trans text={err.message} />);
-      } finally {
-        setSubmitting(false);
-      }
-      return;
-    }
-
-    // authMode === 'signup'
-    if (!role) {
-      showToast(t.selectRole);
-      setSubmitting(false);
-      return;
-    }
-
-    const missing = validateRoleFields(role, roleValues, lang);
-    if (missing.length > 0) {
-      showToast(`${t.fillRequiredFieldsPrefix}${missing.join(', ')}`);
-      setSubmitting(false);
-      return;
-    }
-
-    try {
-      const res = await signup({
-        name,
-        email: email.trim(),
-        password,
-        role,
-        profile: { city, ...normalizeRoleFields(role, roleValues) },
-      });
-
-      if (res.needsEmailConfirmation) {
-        showToast('Account created! Please check your email to verify your account before logging in.');
-        setAuthMode('login');
-      } else {
-        showToast('Account created successfully');
-        navigate(ROLE_HOME[res.user?.role] || homePath || '/');
-      }
-    } catch (err) {
-      showToast(<Trans text={err.message} />);
-    } finally {
-      setSubmitting(false);
+    const element = document.getElementById(id);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth' });
     }
   };
 
   return (
-    <div className="app-shell">
-      <TopBar />
+    <div className="landing-page">
+      {/* =====================================================
+           TOP GOVERNMENT BAR
+      ====================================================== */}
+      <div className="gov-bar">
+        <div className="landing-container gov-bar-inner">
+          <div className="gov-left">
+            <div className="gov-emblem">IND</div>
+            <span><Trans text="Government & Civic Services Portal" /></span>
+          </div>
 
-      <section className="hero">
-        <h1>{t.heroTitle}</h1>
-        <p>{t.heroSub}</p>
-        <div className="hero__stats">
-          <div className="hero-stat"><div className="hero-stat__num">1,240+</div><div className="hero-stat__label">{t.stat1}</div></div>
-          <div className="hero-stat"><div className="hero-stat__num">450+</div><div className="hero-stat__label">{t.stat2}</div></div>
-          <div className="hero-stat"><div className="hero-stat__num">85+</div><div className="hero-stat__label">{t.stat3}</div></div>
+          <div className="gov-right">
+            <span><Trans text="Accessibility" /></span>
+            <span><Trans text="Help & Support" /></span>
+          </div>
+        </div>
+      </div>
+
+      {/* =====================================================
+           NAVBAR
+      ====================================================== */}
+      <nav className="navbar">
+        <div className="landing-container nav-inner">
+          <a
+            href="#home"
+            className="brand"
+            onClick={(e) => scrollToSection(e, 'home')}
+          >
+            <div className="brand-symbol">⚡</div>
+            <div>
+              <div className="brand-name">
+                Samadhan<span>Setu</span>
+              </div>
+              <div className="brand-subtitle">
+                <Trans text="Civic Problem Resolution Platform" />
+              </div>
+            </div>
+          </a>
+
+          <div className="nav-links">
+            <a href="#home" onClick={(e) => scrollToSection(e, 'home')}>
+              <Trans text="Home" />
+            </a>
+            <a href="#how" onClick={(e) => scrollToSection(e, 'how')}>
+              <Trans text="How It Works" />
+            </a>
+            <a href="#categories" onClick={(e) => scrollToSection(e, 'categories')}>
+              <Trans text="Problems" />
+            </a>
+            <a href="#ecosystem" onClick={(e) => scrollToSection(e, 'ecosystem')}>
+              <Trans text="Ecosystem" />
+            </a>
+          </div>
+
+          <div className="nav-actions">
+            <select
+              className="language-select"
+              value={lang}
+              onChange={handleLanguageChange}
+              aria-label={t("Select Language")}
+            >
+              <option value="en">English</option>
+              <option value="hi">हिंदी</option>
+            </select>
+
+            <button
+              className="login-btn"
+              onClick={() => navigate('/login')}
+            >
+              <Trans text="Log In" />
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      {/* =====================================================
+           HERO
+      ====================================================== */}
+      <section className="hero" id="home">
+        <div className="landing-container hero-inner">
+          <div className="hero-content">
+            <div className="hero-badge">
+              <span className="status-dot"></span>
+              <Trans text="Building Better Communities Together" />
+            </div>
+
+            <h1>
+              <Trans text="Report a Problem." />
+              <br />
+              <span><Trans text="Find a Solution." /></span>
+            </h1>
+
+            <p className="hero-description">
+              <Trans text="SamadhanSetu connects citizens, government, universities, students and industry to identify real civic problems and turn them into measurable solutions." />
+            </p>
+
+            <div className="hero-actions">
+              <button
+                className="primary-btn"
+                onClick={() => navigate('/login')}
+              >
+                <Trans text="+ Report a Problem" />
+              </button>
+
+              <button
+                className="secondary-btn"
+                onClick={() => navigate('/login')}
+              >
+                <Trans text="Track a Problem" />
+              </button>
+            </div>
+
+            <div className="hero-note">
+              <span>✓ <Trans text="Multilingual Access" /></span>
+              <span>✓ <Trans text="Transparent Tracking" /></span>
+              <span>✓ <Trans text="Community Driven" /></span>
+            </div>
+          </div>
+
+          {/* Dashboard Visual */}
+          <div className="hero-visual">
+            <div className="dashboard-card">
+              <div className="dashboard-header">
+                <div className="dashboard-title"><Trans text="Civic Issue Overview" /></div>
+                <div className="live-status">● <Trans text="PLATFORM OVERVIEW" /></div>
+              </div>
+
+              <div className="map-area">
+                <div className="map-outline"></div>
+                <div className="map-pin pin-1"></div>
+                <div className="map-pin pin-2"></div>
+                <div className="map-pin pin-3"></div>
+                <div className="map-pin pin-4"></div>
+                <div className="map-label"><Trans text="Jharkhand • Civic Issues" /></div>
+              </div>
+
+              <div className="dashboard-stats">
+                <div className="mini-stat">
+                  <div className="mini-stat-number">1,248</div>
+                  <div className="mini-stat-label"><Trans text="Problems Reported" /></div>
+                </div>
+
+                <div className="mini-stat">
+                  <div className="mini-stat-number">736</div>
+                  <div className="mini-stat-label"><Trans text="Resolved" /></div>
+                </div>
+
+                <div className="mini-stat">
+                  <div className="mini-stat-number">42</div>
+                  <div className="mini-stat-label"><Trans text="Active Projects" /></div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
-      <div className="auth-container">
-        <div className="auth-tabs">
-          <div className={`auth-tab${authMode === 'login' ? ' is-active' : ''}`} onClick={() => setAuthMode('login')}>{t.loginTab}</div>
-          <div className={`auth-tab${authMode === 'signup' ? ' is-active' : ''}`} onClick={() => setAuthMode('signup')}>{t.signupTab}</div>
+      {/* =====================================================
+           STATISTICS
+      ====================================================== */}
+      <section className="trust-bar">
+        <div className="landing-container trust-inner">
+          <div className="trust-item">
+            <div className="trust-number">1,248+</div>
+            <div className="trust-label"><Trans text="Problems Reported" /></div>
+          </div>
+
+          <div className="trust-item">
+            <div className="trust-number">736+</div>
+            <div className="trust-label"><Trans text="Solutions Delivered" /></div>
+          </div>
+
+          <div className="trust-item">
+            <div className="trust-number">50+</div>
+            <div className="trust-label"><Trans text="Institution Partners" /></div>
+          </div>
+
+          <div className="trust-item">
+            <div className="trust-number">24</div>
+            <div className="trust-label"><Trans text="Districts Covered" /></div>
+          </div>
         </div>
+      </section>
 
-        <h2 className="auth-heading">{authMode === 'login' ? t.loginHeading : t.signupHeading}</h2>
-        <p className="auth-sub">{t.loginSub}</p>
-
-        <form onSubmit={handleSubmit}>
-          {authMode === 'signup' && (
-            <>
-              <div className="field">
-                <label>{t.lblRegRole} *</label>
-                <select value={role} onChange={(e) => handleRoleChange(e.target.value)}>
-                  {ROLES.map((r) => (
-                    <option key={r.value} value={r.value}>{t[r.labelKey] || r.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="field">
-                <label>{t.lblRegName}</label>
-                <input type="text" value={name} onChange={(e) => setName(e.target.value)} />
-              </div>
-              {role === 'citizen' && (
-                <div className="field">
-                  <label>{t.lblRegCity}</label>
-                  <input type="text" value={city} onChange={(e) => setCity(e.target.value)} />
-                </div>
-              )}
-              <RoleFields role={role} values={roleValues} onChange={setRoleValue} />
-            </>
-          )}
-
-          <div className="field">
-            <label>{t.lblRegEmail} *</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+      {/* =====================================================
+           PROBLEM CATEGORIES (Informational Only)
+      ====================================================== */}
+      <section className="section" id="categories">
+        <div className="landing-container">
+          <div className="section-header">
+            <div className="section-label"><Trans text="Civic Problems" /></div>
+            <h2 className="section-title"><Trans text="What would you like to report?" /></h2>
+            <p className="section-description">
+              <Trans text="Help identify problems around you. Your report can become the starting point for a real solution." />
+            </p>
           </div>
 
-          <div className="field">
-            <label>{t.lblRegPass} *</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••" required />
+          <div className="category-grid">
+            <div className="category-card">
+              <div className="category-icon">🛣️</div>
+              <h3><Trans text="Roads & Transport" /></h3>
+              <p>
+                <Trans text="Damaged roads, traffic issues, street connectivity and public transport." />
+              </p>
+            </div>
+
+            <div className="category-card">
+              <div className="category-icon">💧</div>
+              <h3><Trans text="Water & Sanitation" /></h3>
+              <p>
+                <Trans text="Water supply, drainage, sanitation and waste management concerns." />
+              </p>
+            </div>
+
+            <div className="category-card">
+              <div className="category-icon">⚡</div>
+              <h3><Trans text="Electricity" /></h3>
+              <p>
+                <Trans text="Street lighting, power infrastructure and electricity-related civic issues." />
+              </p>
+            </div>
+
+            <div className="category-card">
+              <div className="category-icon">🏛️</div>
+              <h3><Trans text="Public Services" /></h3>
+              <p>
+                <Trans text="Problems related to public facilities, administration and civic services." />
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* =====================================================
+           HOW IT WORKS
+      ====================================================== */}
+      <section className="section process-section" id="how">
+        <div className="landing-container">
+          <div className="section-header">
+            <div className="section-label"><Trans text="Simple Process" /></div>
+            <h2 className="section-title"><Trans text="From Problem to Impact" /></h2>
+            <p className="section-description">
+              <Trans text="SamadhanSetu creates a structured pathway from citizen-reported problems to innovative solutions." />
+            </p>
           </div>
 
-          <button type="submit" className="btn btn-primary btn-block" disabled={submitting}>
-            {submitting ? 'Please wait...' : t.btnLoginSubmit}
-          </button>
-        </form>
-      </div>
+          <div className="process-grid">
+            <div className="process-card">
+              <div className="process-number">1</div>
+              <h3><Trans text="Report" /></h3>
+              <p><Trans text="Citizen submits a civic problem using text, image or voice." /></p>
+            </div>
+
+            <div className="process-card">
+              <div className="process-number">2</div>
+              <h3><Trans text="Validate" /></h3>
+              <p>
+                <Trans text="AI-assisted validation checks quality, relevance and existing solutions." />
+              </p>
+            </div>
+
+            <div className="process-card">
+              <div className="process-number">3</div>
+              <h3><Trans text="Connect" /></h3>
+              <p>
+                <Trans text="Relevant universities and institutions receive suitable problem statements." />
+              </p>
+            </div>
+
+            <div className="process-card">
+              <div className="process-number">4</div>
+              <h3><Trans text="Innovate" /></h3>
+              <p>
+                <Trans text="Students and faculty develop practical solution proposals." />
+              </p>
+            </div>
+
+            <div className="process-card">
+              <div className="process-number">5</div>
+              <h3><Trans text="Impact" /></h3>
+              <p>
+                <Trans text="Industry and government help transform promising ideas into real outcomes." />
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* =====================================================
+           ECOSYSTEM
+      ====================================================== */}
+      <section className="section ecosystem" id="ecosystem">
+        <div className="landing-container">
+          <div className="section-header">
+            <div className="section-label"><Trans text="Connected Ecosystem" /></div>
+            <h2 className="section-title"><Trans text="One Platform. Multiple Stakeholders." /></h2>
+            <p className="section-description">
+              <Trans text="Bringing the right people together around real-world problems." />
+            </p>
+          </div>
+
+          <div className="ecosystem-box">
+            <div className="ecosystem-flow">
+              <div className="flow-item">👤 <Trans text="Citizen" /></div>
+              <div className="arrow">→</div>
+              <div className="flow-item">🏛️ <Trans text="University" /></div>
+              <div className="arrow">→</div>
+              <div className="flow-item">🎓 <Trans text="Student" /></div>
+              <div className="arrow">→</div>
+              <div className="flow-item">🏭 <Trans text="Industry" /></div>
+              <div className="arrow">→</div>
+              <div className="flow-item">🏢 <Trans text="Government" /></div>
+              <div className="arrow">→</div>
+              <div className="flow-item">✓ <Trans text="Impact" /></div>
+            </div>
+
+            <div className="ecosystem-caption">
+              <Trans text="Citizen → University → Student → Industry → Government → Impact" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* =====================================================
+           CTA
+      ====================================================== */}
+      <section className="cta-section">
+        <div className="landing-container">
+          <div className="cta-box">
+            <div className="cta-content">
+              <h2><Trans text="Have a problem in your community?" /></h2>
+              <p><Trans text="Your observation could become someone's next solution." /></p>
+            </div>
+
+            <button
+              className="cta-button"
+              onClick={() => navigate('/login')}
+            >
+              <Trans text="Report a Problem →" />
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* =====================================================
+           FOOTER
+      ====================================================== */}
+      <footer>
+        <div className="landing-container">
+          <div className="footer-grid">
+            <div>
+              <div className="footer-brand">
+                ⚡ Samadhan<span>Setu</span>
+              </div>
+              <p className="footer-description">
+                <Trans text="A civic problem resolution platform connecting communities, institutions and innovators to create meaningful local impact." />
+              </p>
+            </div>
+
+            <div className="footer-column">
+              <h4><Trans text="Platform" /></h4>
+              <a href="#home" onClick={(e) => scrollToSection(e, 'home')}>
+                <Trans text="Home" />
+              </a>
+              <a href="#how" onClick={(e) => scrollToSection(e, 'how')}>
+                <Trans text="How It Works" />
+              </a>
+              <a href="#categories" onClick={() => navigate('/login')}>
+                <Trans text="Report Problem" />
+              </a>
+              <a href="#ecosystem" onClick={(e) => scrollToSection(e, 'ecosystem')}>
+                <Trans text="Ecosystem" />
+              </a>
+            </div>
+
+            <div className="footer-column">
+              <h4><Trans text="Stakeholders" /></h4>
+              <a onClick={() => navigate('/login')}><Trans text="Citizens" /></a>
+              <a onClick={() => navigate('/login')}><Trans text="Government" /></a>
+              <a onClick={() => navigate('/login')}><Trans text="Universities" /></a>
+              <a onClick={() => navigate('/login')}><Trans text="Industry" /></a>
+            </div>
+
+            <div className="footer-column">
+              <h4><Trans text="Support" /></h4>
+              <a href="#home" onClick={(e) => scrollToSection(e, 'home')}>
+                <Trans text="Help Centre" />
+              </a>
+              <a href="#home" onClick={(e) => scrollToSection(e, 'home')}>
+                <Trans text="Accessibility" />
+              </a>
+              <a href="#home" onClick={(e) => scrollToSection(e, 'home')}>
+                <Trans text="Privacy Policy" />
+              </a>
+              <a href="#home" onClick={(e) => scrollToSection(e, 'home')}>
+                <Trans text="Terms of Use" />
+              </a>
+            </div>
+          </div>
+
+          <div className="footer-bottom">
+            <span><Trans text="© 2026 SamadhanSetu. Civic Technology Initiative." /></span>
+            <span><Trans text="Designed for citizen-centric problem solving." /></span>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
