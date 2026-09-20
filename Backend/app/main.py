@@ -29,6 +29,7 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "https://samadhansetusih.vercel.app",
     "https://vidysetu.vercel.app",
+    "https://vidysetusih.vercel.app",
 ]
 
 app.add_middleware(
