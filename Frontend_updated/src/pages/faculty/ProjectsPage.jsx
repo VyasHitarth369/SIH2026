@@ -685,6 +685,19 @@ export default function FacultyProjectsPage() {
                                     <strong><Trans text="Proposed Idea:" /></strong> {app.idea || app.proposed_solution}
                                   </p>
                                 )}
+                                {(app.attachment_url || app.attachment?.url) && (
+                                  <div style={{ marginTop: 6 }}>
+                                    <a
+                                      className="attachment-chip"
+                                      href={app.attachment_url || app.attachment?.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}
+                                    >
+                                      📄 {app.attachment_name || app.attachment?.name || 'Supporting Document.pdf'}
+                                    </a>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           );

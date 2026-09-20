@@ -28,6 +28,16 @@ export const governmentService = {
     const res = await apiClient.get('/government/students', { university_id: universityId });
     return res?.data || [];
   },
+
+  async approveProblem(challengeId) {
+    const res = await apiClient.post(`/government/problems/${challengeId}/approve`);
+    return res?.data || res;
+  },
+
+  async rejectProblem(challengeId, reason) {
+    const res = await apiClient.post(`/government/problems/${challengeId}/reject`, { reason });
+    return res?.data || res;
+  },
 };
 
 export default governmentService;

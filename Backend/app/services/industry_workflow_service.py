@@ -62,15 +62,31 @@ class IndustryWorkflowService:
                 detail=f"Cannot respond to industry match in status '{current_status}'. Match must be in 'recommended' or 'invited' status.",
             )
 
+        if action == "reject":
+            if not response_note or not str(response_note).strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A mandatory rejection reason must be provided when rejecting an industry collaboration proposal.",
+                )
+
         new_status = "accepted" if action == "accept" else "rejected"
         now_str = datetime.now(timezone.utc).isoformat()
 
+        import uuid
+        is_valid_uuid = False
+        try:
+            uuid.UUID(str(user.user_id))
+            is_valid_uuid = True
+        except Exception:
+            pass
+
         update_payload = {
             "status": new_status,
-            "responded_by": user.user_id,
             "responded_at": now_str,
             "response_note": response_note,
         }
+        if is_valid_uuid:
+            update_payload["responded_by"] = str(user.user_id)
 
         try:
             res = (
@@ -80,9 +96,12 @@ class IndustryWorkflowService:
                 .eq("industry_id", industry_id)
                 .execute()
             )
-            updated = res.data[0] if (res and res.data) else {**match, **update_payload}
+            updated = res.data[0] if (res and res.data) else {**match, **update_payload, "responded_by": str(user.user_id)}
         except Exception:
-            updated = {**match, **update_payload}
+            updated = {**match, **update_payload, "responded_by": str(user.user_id)}
+
+        if "responded_by" not in updated or not updated["responded_by"]:
+            updated["responded_by"] = str(user.user_id)
 
         # 4. If accepted, associate industry with existing project if present
         if action == "accept":
@@ -165,6 +184,27 @@ class IndustryWorkflowService:
                 ),
             )
 
+        # 3b. Verify Industry Manager has approved the industry match
+        challenge_id = project.get("challenge_id")
+        if challenge_id:
+            try:
+                m_res = (
+                    self.client.table("challenge_industry_matches")
+                    .select("status")
+                    .eq("challenge_id", challenge_id)
+                    .eq("industry_id", employee_industry_id)
+                    .execute()
+                )
+                if not m_res.data or m_res.data[0].get("status") != "accepted":
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Cannot express interest: The Industry Manager has not approved the collaboration proposal for this project yet.",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
         # 4. Check existing interest record (duplicate prevention)
         existing = self._find_employee_interest(project_id, employee_id)
         now_str = datetime.now(timezone.utc).isoformat()
@@ -227,9 +267,12 @@ class IndustryWorkflowService:
     def list_employee_interests(
         self, project_id: str, user: AuthenticatedUser
     ) -> List[Dict[str, Any]]:
-        """Lists employee interest expressions on a project with hydrated profiles."""
+        """Lists employee interest expressions on a project with hydrated profiles.
+        Strictly restricted to Industry Manager/SPOC (or Government). Normal employees receive 403.
+        """
         project = self._get_project_or_404(project_id)
-        self._verify_project_view_access(project, user)
+        project_industry_id = project.get("industry_id")
+        self._verify_industry_spoc_auth(project_industry_id, user)
 
         try:
             res = (
@@ -273,11 +316,17 @@ class IndustryWorkflowService:
         - Ordinary employees cannot modify other employees' interest records
         """
         project = self._get_project_or_404(project_id)
+        project_industry_id = project.get("industry_id")
+        user_emp_id = (user.stakeholder or {}).get("employee_id")
+
+        # Handle 'selected' and 'not_selected' SPOC permissions early
+        if new_status in ["selected", "not_selected"]:
+            # Rule 4 & 5: Only authorized Industry SPOC with approval_authority can select
+            if user.role != "government":
+                self._verify_industry_spoc_auth(project_industry_id, user)
+
         interest = self._get_interest_or_404(project_id, interest_id)
         target_employee_id = interest.get("employee_id")
-
-        user_emp_id = (user.stakeholder or {}).get("employee_id")
-        project_industry_id = project.get("industry_id")
 
         # Handle 'withdrawn' action
         if new_status == "withdrawn":
@@ -292,12 +341,6 @@ class IndustryWorkflowService:
 
         # Handle 'selected' and 'not_selected' actions
         elif new_status in ["selected", "not_selected"]:
-            # Rule 4 & 5: Only authorized Industry SPOC with approval_authority can select
-            if not self._is_verified_spoc_for_industry(project_industry_id, user) and user.role != "government":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access forbidden: SPOC approval authority is required to select or reject project participants.",
-                )
 
             # Rule 7: Anti-self-selection: An employee cannot select themselves!
             if user_emp_id and user_emp_id == target_employee_id:
@@ -308,15 +351,20 @@ class IndustryWorkflowService:
 
             # Rule 8: Validate target employee belongs to the correct industry
             target_emp = self._get_employee_record_silent(target_employee_id)
-            if target_emp:
-                if target_emp.get("industry_id") != project_industry_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            f"Employee '{target_employee_id}' belongs to industry '{target_emp.get('industry_id')}', "
-                            f"not project industry '{project_industry_id}'."
-                        ),
-                    )
+            if not target_emp or target_emp.get("industry_id") != project_industry_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Employee '{target_employee_id}' does not belong to project industry '{project_industry_id}'."
+                    ),
+                )
+
+            # Rule 9: Target interest must be eligible for selection
+            if new_status == "selected" and interest.get("status") not in ["interested", "selected"]:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Target interest is in status '{interest.get('status')}' and is not eligible for selection.",
+                )
 
         patch = {"status": new_status}
         try:
@@ -329,6 +377,18 @@ class IndustryWorkflowService:
             updated = res.data[0] if (res and res.data) else {**interest, **patch}
         except Exception:
             updated = {**interest, **patch}
+
+        # If an employee was selected, mark other interested applicants as not_selected
+        if new_status == "selected":
+            try:
+                self.client.table("project_employee_interests")\
+                    .update({"status": "not_selected"})\
+                    .eq("project_id", project_id)\
+                    .eq("status", "interested")\
+                    .neq("interest_id", interest_id)\
+                    .execute()
+            except Exception:
+                pass
 
         target_emp = self._get_employee_record_silent(target_employee_id)
         return self._hydrate_interest(updated, target_emp)
@@ -529,7 +589,7 @@ class IndustryWorkflowService:
         user: AuthenticatedUser,
         status_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Lists challenge match invitations for an industry with hydrated challenge details."""
+        """Lists challenge match invitations for an industry with hydrated challenge, project, and interested employees."""
         self._verify_industry_spoc_auth(industry_id, user)
 
         try:
@@ -559,6 +619,47 @@ class IndustryWorkflowService:
             except Exception:
                 item["challenge"] = None
                 item["ai_analysis"] = None
+
+            # Hydrate linked project, university, faculty, and interested employees
+            item["project"] = None
+            item["university_name"] = None
+            item["faculty_name"] = None
+            item["interested_employees"] = []
+            item["assigned_mentor"] = None
+            try:
+                p_res = self.client.table("projects").select("*").eq("challenge_id", ch_id).execute()
+                if p_res.data:
+                    proj = p_res.data[0]
+                    item["project"] = proj
+                    pid = proj.get("project_id")
+
+                    # University
+                    if proj.get("university_id"):
+                        u_res = self.client.table("universities").select("university_name").eq("university_id", proj["university_id"]).execute()
+                        if u_res.data:
+                            item["university_name"] = u_res.data[0].get("university_name")
+
+                    # Faculty
+                    if proj.get("faculty_id"):
+                        f_res = self.client.table("faculty").select("faculty_name, email, department").eq("faculty_id", proj["faculty_id"]).execute()
+                        if f_res.data:
+                            item["faculty_name"] = f_res.data[0].get("faculty_name")
+
+                    # Interested employees
+                    if pid:
+                        interests = self.list_employee_interests(pid, user)
+                        item["interested_employees"] = interests
+                        selected_int = next((i for i in interests if i.get("status") == "selected"), None)
+                        if selected_int:
+                            item["assigned_mentor"] = {
+                                "employee_id": selected_int.get("employee_id"),
+                                "employee_name": selected_int.get("employee_name"),
+                                "department": selected_int.get("department"),
+                                "designation": selected_int.get("designation"),
+                            }
+            except Exception:
+                pass
+
             hydrated.append(item)
 
         return hydrated
@@ -567,7 +668,9 @@ class IndustryWorkflowService:
         self,
         user: AuthenticatedUser,
     ) -> List[Dict[str, Any]]:
-        """Lists active/proposed projects partnered with the employee's industry, including personal interest status."""
+        """Lists active projects partnered with the employee's industry.
+        Enforces that projects are only visible after the Industry Manager has actually approved the match.
+        """
         if user.role != "industry_employee":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -596,18 +699,148 @@ class IndustryWorkflowService:
         except Exception:
             projects = []
 
-        hydrated = []
+        # Enforce requirement 2: employee must only see projects where Industry Manager has APPROVED the match
+        approved_projects = []
         for proj in projects:
+            cid = proj.get("challenge_id")
+            if cid:
+                try:
+                    m_res = (
+                        self.client.table("challenge_industry_matches")
+                        .select("status")
+                        .eq("challenge_id", cid)
+                        .eq("industry_id", emp_industry)
+                        .execute()
+                    )
+                    if m_res.data and m_res.data[0].get("status") == "accepted":
+                        approved_projects.append(proj)
+                except Exception:
+                    pass
+            elif proj.get("status") in ["active", "prototype", "pilot", "deployed", "solved", "completed"]:
+                approved_projects.append(proj)
+
+        hydrated = []
+        for proj in approved_projects:
             p_item = dict(proj)
+            pid = proj.get("project_id")
+            cid = proj.get("challenge_id")
+
             try:
-                ch_res = self.client.table("challenges").select("*").eq("challenge_id", proj.get("challenge_id")).execute()
+                ch_res = self.client.table("challenges").select("*").eq("challenge_id", cid).execute()
                 p_item["challenge"] = ch_res.data[0] if ch_res.data else None
+                if ch_res.data:
+                    an_res = self.client.table("ai_analysis").select("*").eq("challenge_id", cid).execute()
+                    p_item["ai_analysis"] = an_res.data[0] if an_res.data else None
             except Exception:
                 p_item["challenge"] = None
+                p_item["ai_analysis"] = None
 
-            # Check employee's interest status
-            my_interest = self._find_employee_interest(proj["project_id"], emp_id)
+            # Hydrate university and faculty
+            p_item["university_name"] = None
+            p_item["faculty_name"] = None
+            if proj.get("university_id"):
+                try:
+                    u_res = self.client.table("universities").select("university_name").eq("university_id", proj["university_id"]).execute()
+                    if u_res.data:
+                        p_item["university_name"] = u_res.data[0].get("university_name")
+                except Exception:
+                    pass
+            if proj.get("faculty_id"):
+                try:
+                    f_res = self.client.table("faculty").select("faculty_name").eq("faculty_id", proj["faculty_id"]).execute()
+                    if f_res.data:
+                        p_item["faculty_name"] = f_res.data[0].get("faculty_name")
+                except Exception:
+                    pass
+
+            # Check employee's personal interest status
+            my_interest = self._find_employee_interest(pid, emp_id)
             p_item["my_interest"] = my_interest
+
+            # Check if an official mentor has been selected (status == 'selected')
+            p_item["assigned_mentor"] = None
+            p_item["industry_mentor_name"] = None
+            try:
+                pei_res = self.client.table("project_employee_interests").select("employee_id, status").eq("project_id", pid).eq("status", "selected").execute()
+                if pei_res.data:
+                    sel_emp_id = pei_res.data[0].get("employee_id")
+                    sel_emp = self._get_employee_record_silent(sel_emp_id)
+                    if sel_emp:
+                        p_item["assigned_mentor"] = {
+                            "employee_id": sel_emp_id,
+                            "employee_name": sel_emp.get("employee_name"),
+                            "department": sel_emp.get("department"),
+                            "designation": sel_emp.get("designation"),
+                        }
+                        p_item["industry_mentor_name"] = sel_emp.get("employee_name")
+            except Exception:
+                pass
+
             hydrated.append(p_item)
 
         return hydrated
+
+    def list_industry_mous(self, user: AuthenticatedUser) -> List[Dict[str, Any]]:
+        """Lists factual MOU collaboration records for the authenticated Industry Manager's company.
+        Strictly SPOC only (normal employee receives 403). Uses factual data only (no fake PDFs).
+        """
+        employee_rec = user.stakeholder or {}
+        emp_industry = employee_rec.get("industry_id")
+        if not emp_industry:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: Could not resolve your authorized industry organization.",
+            )
+
+        self._verify_industry_spoc_auth(emp_industry, user)
+
+        try:
+            p_res = (
+                self.client.table("projects")
+                .select("*")
+                .eq("industry_id", emp_industry)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            projects = p_res.data or []
+        except Exception:
+            projects = []
+
+        # Get industry name
+        ind_name = "Industry Partner"
+        try:
+            ind_res = self.client.table("industries").select("industry_name").eq("industry_id", emp_industry).execute()
+            if ind_res.data:
+                ind_name = ind_res.data[0].get("industry_name") or ind_name
+        except Exception:
+            pass
+
+        mous = []
+        for p in projects:
+            pid = p.get("project_id")
+            uni_id = p.get("university_id")
+            uni_name = "Partner University"
+            if uni_id:
+                try:
+                    u_res = self.client.table("universities").select("university_name").eq("university_id", uni_id).execute()
+                    if u_res.data:
+                        uni_name = u_res.data[0].get("university_name") or uni_name
+                except Exception:
+                    pass
+
+            mous.append({
+                "mou_id": f"MOU-IND-{emp_industry}-{pid}",
+                "project_id": pid,
+                "project_title": p.get("project_title") or "Collaborative Innovation Project",
+                "university_id": uni_id,
+                "university_name": uni_name,
+                "industry_id": emp_industry,
+                "industry_name": ind_name,
+                "government_partner": "Government of Jharkhand",
+                "status": "Active Collaboration" if p.get("status") in ["active", "prototype", "pilot", "deployed", "solved", "completed"] else "Initiated",
+                "effective_date": p.get("start_date") or p.get("created_at") or "In Effect",
+                "has_document": False,
+                "document_url": None,
+            })
+
+        return mous

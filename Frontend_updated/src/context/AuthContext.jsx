@@ -30,10 +30,15 @@ export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(true);
 
   // Helper to fetch authoritative profile from backend using the current token
-  const fetchAuthoritativeUser = useCallback(async () => {
-    const res = await apiClient.get('/auth/me');
+  const fetchAuthoritativeUser = useCallback(async (expectedUserId = null, explicitToken = null) => {
+    const headers = explicitToken ? { Authorization: `Bearer ${explicitToken}` } : {};
+    const res = await apiClient.get('/auth/me', {}, { headers });
     if (!res || !res.success || !res.data) {
       throw new Error('Failed to retrieve user profile from backend');
+    }
+    // Verify response matches the expected authenticated user ID to prevent race conditions
+    if (expectedUserId && res.data.user_id !== expectedUserId) {
+      throw new Error('User identity changed during profile retrieval');
     }
     return res.data;
   }, []);
@@ -47,7 +52,7 @@ export function AuthProvider({ children }) {
         const { data: { session } } = await supabase.auth.getSession();
         if (session && isMounted) {
           try {
-            const authoritativeUser = await fetchAuthoritativeUser();
+            const authoritativeUser = await fetchAuthoritativeUser(session.user?.id);
             if (isMounted) {
               setUser(authoritativeUser);
             }
@@ -74,11 +79,12 @@ export function AuthProvider({ children }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT' || !session) {
         if (isMounted) setUser(null);
-      } else if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+      } else if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'SIGNED_IN') {
+        const sessionUserId = session.user?.id;
         // Safe async call outside the synchronous callback
         setTimeout(() => {
           if (isMounted) {
-            fetchAuthoritativeUser()
+            fetchAuthoritativeUser(sessionUserId)
               .then((authData) => {
                 if (isMounted) setUser(authData);
               })
@@ -115,7 +121,7 @@ export function AuthProvider({ children }) {
       throw new Error('No session returned. Please check your account credentials.');
     }
 
-    const authoritativeUser = await fetchAuthoritativeUser();
+    const authoritativeUser = await fetchAuthoritativeUser(data.session.user?.id);
     setUser(authoritativeUser);
     return authoritativeUser;
   };
@@ -147,11 +153,11 @@ export function AuthProvider({ children }) {
     // If an active session is returned immediately, establish authenticated state
     if (data.session) {
       try {
-        const authoritativeUser = await fetchAuthoritativeUser();
+        const authoritativeUser = await fetchAuthoritativeUser(data.session.user?.id, data.session.access_token);
         setUser(authoritativeUser);
         return { user: authoritativeUser, session: data.session, needsEmailConfirmation: false };
-      } catch {
-        // Fallback if backend profile lookup is slightly delayed
+      } catch (err) {
+        console.warn('Profile fetch after signup failed:', err.message);
       }
     }
 
@@ -170,6 +176,9 @@ export function AuthProvider({ children }) {
       console.warn('Sign out warning:', err.message);
     } finally {
       setUser(null);
+      try {
+        sessionStorage.clear();
+      } catch {}
     }
   };
 

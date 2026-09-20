@@ -41,7 +41,7 @@ export default function StudentDetailModal({ student, onClose }) {
         <div style={{ display: 'flex', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
           <a
             className="btn btn-primary btn-block icon-btn"
-            href={`mailto:${student.email}?subject=${encodeURIComponent(`Opportunity for ${student.name} — via SamadhanSetu`)}`}
+            href={`mailto:${student.email}?subject=${encodeURIComponent(`Opportunity for ${student.name} — via VidySetu`)}`}
           >
             <EmailIcon /> <Trans text="Email" />
           </a>

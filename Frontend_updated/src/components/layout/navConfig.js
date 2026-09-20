@@ -51,24 +51,45 @@ export function getNavItems(user, t, lang = 'en') {
         { to: '/government/add-problem', label: lang === 'hi' ? '➕ नई समस्या दर्ज करें' : '➕ Add Problem' },
         { to: '/government/active-problems', label: lang === 'hi' ? '📋 सक्रिय समस्याएं' : '📋 Active Problems' },
         { to: '/government/faculties', label: lang === 'hi' ? '👨‍🏫 आवंटित फैकल्टी' : '👨‍🏫 Assigned Faculties' },
-        { to: '/government/students', label: lang === 'hi' ? '👨‍🎓 समाधान कर रहे छात्र' : '👨‍🎓 Students Solving Problems' },
+        { to: '/leaderboard', label: lang === 'hi' ? '🏆 लीडरबोर्ड' : '🏆 Leaderboard' },
+        { to: '/government/mou', label: lang === 'hi' ? '📁 समझौता ज्ञापन (MOU)' : '📁 MOU' },
         { to: '/government/solved', label: lang === 'hi' ? '✅ हल की गई समस्याएं' : '✅ Solved Problems' },
         { to: '/profile', label: lang === 'hi' ? '👤 मेरी प्रोफ़ाइल' : '👤 Profile' },
       ];
       break;
 
     case 'industry_employee':
-    case 'industry':
-      items = [
-        { to: '/industry-employee/dashboard', label: lang === 'hi' ? '📊 डैशबोर्ड' : '📊 Dashboard' },
-        { to: '/industry-employee/add-problem', label: lang === 'hi' ? '➕ नई समस्या दर्ज करें' : '➕ Add Problem' },
-        { to: '/industry-employee/proposals', label: lang === 'hi' ? '🤝 सहयोग प्रस्ताव' : '🤝 Collaboration Proposals' },
-        { to: '/industry-employee/collaboration', label: lang === 'hi' ? '🔗 सक्रिय सहयोग' : '🔗 Active Collaborations' },
-        { to: '/industry-employee/past-projects', label: lang === 'hi' ? '📁 पूर्व परियोजनाएं' : '📁 Past Projects' },
-        { to: '/leaderboard', label: lang === 'hi' ? '🏆 लीडरबोर्ड' : '🏆 Leaderboard' },
-        { to: '/profile', label: lang === 'hi' ? '👤 मेरी प्रोफ़ाइल' : '👤 Profile' },
-      ];
+    case 'industry': {
+      const isManager = Boolean(
+        user.is_spoc ||
+        user.approval_authority ||
+        user.stakeholder?.approval_authority
+      );
+
+      if (isManager) {
+        items = [
+          { to: '/industry-employee/dashboard', label: lang === 'hi' ? '📊 डैशबोर्ड' : '📊 Dashboard' },
+          { to: '/industry-employee/add-problem', label: lang === 'hi' ? '➕ नई समस्या दर्ज करें' : '➕ Add Problem' },
+          { to: '/industry-employee/proposals', label: lang === 'hi' ? '🤝 सहयोग प्रस्ताव' : '🤝 Collaboration Proposals' },
+          { to: '/industry-employee/collaboration', label: lang === 'hi' ? '🔗 सक्रिय सहयोग' : '🔗 Active Collaboration' },
+          { to: '/industry-employee/past-projects', label: lang === 'hi' ? '📁 पूर्व परियोजनाएं' : '📁 Past Projects' },
+          { to: '/leaderboard', label: lang === 'hi' ? '🏆 लीडरबोर्ड' : '🏆 Leaderboard' },
+          { to: '/industry-employee/mou', label: lang === 'hi' ? '📁 समझौता ज्ञापन (MOU)' : '📁 MOU' },
+          { to: '/profile', label: lang === 'hi' ? '👤 मेरी प्रोफ़ाइल' : '👤 Profile' },
+        ];
+      } else {
+        items = [
+          { to: '/industry-employee/dashboard', label: lang === 'hi' ? '📊 डैशबोर्ड' : '📊 Dashboard' },
+          { to: '/industry-employee/add-problem', label: lang === 'hi' ? '➕ नई समस्या दर्ज करें' : '➕ Add Problem' },
+          { to: '/industry-employee/collaboration', label: lang === 'hi' ? '🔗 सक्रिय सहयोग' : '🔗 Active Collaborations' },
+          { to: '/industry-employee/past-projects', label: lang === 'hi' ? '📁 पूर्व परियोजनाएं' : '📁 Past Projects' },
+          { to: '/leaderboard', label: lang === 'hi' ? '🏆 लीडरबोर्ड' : '🏆 Leaderboard' },
+          { to: '/industry-employee/my-projects', label: lang === 'hi' ? '📁 मेरे प्रोजेक्ट्स' : '📁 My Projects' },
+          { to: '/profile', label: lang === 'hi' ? '👤 मेरी प्रोफ़ाइल' : '👤 Profile' },
+        ];
+      }
       break;
+    }
 
     default:
       items = [];
@@ -79,6 +100,14 @@ export function getNavItems(user, t, lang = 'en') {
 
 export function getRoleBadge(user, t, lang = 'en') {
   if (!user) return '';
+  const isIndustryManager =
+    (user.role === 'industry_employee' || user.role === 'industry') &&
+    Boolean(user.is_spoc || user.approval_authority || user.stakeholder?.approval_authority);
+
+  if (isIndustryManager) {
+    return lang === 'hi' ? 'उद्योग प्रबंधक (SPOC) पोर्टल' : 'Industry Manager (SPOC) Portal';
+  }
+
   const badgesEn = {
     citizen: 'Citizen Portal',
     student: 'Student Portal',

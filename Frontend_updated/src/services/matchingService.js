@@ -85,6 +85,41 @@ export const matchingService = {
     const res = await apiClient.post(`/projects/${projectId}/employee-interest`, { message });
     return res?.data || res;
   },
+
+  /**
+   * Lists employee interest records for a project (SPOC / Manager only).
+   */
+  async listEmployeeInterests(projectId) {
+    const res = await apiClient.get(`/projects/${projectId}/employee-interests`);
+    return res?.data || [];
+  },
+
+  /**
+   * SPOC selects an employee as official Industry Mentor for a project.
+   */
+  async selectEmployeeMentor(projectId, interestId, note = '') {
+    const res = await apiClient.patch(`/projects/${projectId}/employee-interests/${interestId}`, {
+      status: 'selected',
+      note,
+    });
+    return res?.data || res;
+  },
+
+  /**
+   * Lists projects where current employee is the official Industry Mentor.
+   */
+  async listMyIndustryProjects() {
+    const res = await apiClient.get('/projects?my_projects=true');
+    return res?.data || [];
+  },
+
+  /**
+   * Lists factual MOU records for the authenticated Industry Manager.
+   */
+  async listIndustryMOUs() {
+    const res = await apiClient.get('/projects/industry/mous');
+    return res?.data || [];
+  },
 };
 
 export default matchingService;

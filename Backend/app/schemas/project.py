@@ -83,6 +83,9 @@ class StudentInterestCreate(BaseModel):
     """Payload for student expressing interest in an eligible project."""
 
     role: Optional[str] = Field("applicant", description="Desired role e.g. applicant, researcher, developer")
+    proposed_solution: Optional[str] = Field(None, description="Student's proposed solution idea")
+    attachment_url: Optional[str] = Field(None, description="URL of supporting document/PDF")
+    attachment_name: Optional[str] = Field(None, description="Filename of supporting document/PDF")
 
     model_config = ConfigDict(extra="ignore")
 

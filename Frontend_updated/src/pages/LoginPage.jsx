@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useToast } from '../context/ToastContext';
 import Trans, { useTranslate } from '../components/shared/Trans.jsx';
+import { VidySetuMark } from '../components/shared/VidySetuLogo.jsx';
 import { supabase } from '../services/supabaseClient';
 import { jharkhandCities } from '../data/locations';
 import { STUDENT_APPROVED_UNIVERSITIES } from '../data/orgData';
@@ -134,6 +135,35 @@ export default function LoginPage({ defaultMode = 'login' }) {
     setRoleFields((prev) => ({ ...prev, [field]: value }));
   };
 
+  const handleRoleSelect = (role) => {
+    setSelectedRole(role);
+    setRoleFields({
+      district: '',
+      authorityId: '',
+      governmentDept: '',
+      governmentDesignation: '',
+      university: '',
+      universityDesignation: '',
+      studentUniversity: '',
+      studentDepartment: '',
+      studentId: '',
+      studentDomain: '',
+      studentSkill: '',
+      linkedinId: '',
+      githubId: '',
+      facultyUniversity: '',
+      facultyId: '',
+      researchArea: '',
+      facultyExpertise: '',
+      companyName: '',
+      companyEmail: '',
+      employeeId: '',
+      industryDesignation: '',
+      industryDomain: '',
+      industryExpertise: '',
+    });
+  };
+
   // Password Strength Calculation
   const getPasswordStrength = () => {
     if (!password) return { level: 0, text: '', lines: ['#E2E8F0', '#E2E8F0', '#E2E8F0'] };
@@ -256,6 +286,39 @@ export default function LoginPage({ defaultMode = 'login' }) {
       }
     }
 
+    let profilePayload = { city: city.trim() };
+    if (selectedRole === 'citizen') {
+      profilePayload.district = roleFields.district || '';
+    } else if (selectedRole === 'government') {
+      profilePayload.authorityId = roleFields.authorityId.trim();
+      profilePayload.department = roleFields.governmentDept.trim();
+      profilePayload.designation = roleFields.governmentDesignation.trim();
+    } else if (selectedRole === 'university_admin') {
+      profilePayload.university = roleFields.university;
+      profilePayload.designation = roleFields.universityDesignation.trim();
+    } else if (selectedRole === 'student') {
+      profilePayload.university = roleFields.studentUniversity;
+      profilePayload.department = roleFields.studentDepartment.trim();
+      profilePayload.studentId = roleFields.studentId.trim();
+      profilePayload.domain = roleFields.studentDomain;
+      if (roleFields.studentSkill) profilePayload.skills = roleFields.studentSkill;
+      if (roleFields.linkedinId) profilePayload.linkedinId = roleFields.linkedinId.trim();
+      if (roleFields.githubId) profilePayload.githubId = roleFields.githubId.trim();
+    } else if (selectedRole === 'faculty') {
+      profilePayload.university = roleFields.facultyUniversity;
+      profilePayload.facultyId = roleFields.facultyId.trim();
+      profilePayload.researchArea = roleFields.researchArea.trim();
+      profilePayload.expertise = roleFields.facultyExpertise.trim();
+    } else if (selectedRole === 'industry_employee') {
+      profilePayload.company = roleFields.companyName;
+      profilePayload.companyName = roleFields.companyName;
+      profilePayload.companyEmail = roleFields.companyEmail.trim();
+      profilePayload.employeeId = roleFields.employeeId.trim();
+      profilePayload.designation = roleFields.industryDesignation.trim();
+      profilePayload.domain = roleFields.industryDomain;
+      if (roleFields.industryExpertise) profilePayload.expertise = roleFields.industryExpertise.trim();
+    }
+
     try {
       const res = await signup({
         name: fullName.trim(),
@@ -263,10 +326,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
         password,
         role: selectedRole,
         city: city.trim(),
-        profile: {
-          ...roleFields,
-          city: city.trim(),
-        },
+        profile: profilePayload,
       });
 
       if (res.needsEmailConfirmation) {
@@ -332,11 +392,11 @@ export default function LoginPage({ defaultMode = 'login' }) {
       ====================================================== */}
       <header className="header">
         <div className="header-inner">
-          <div className="brand" onClick={() => navigate('/')}>
-            <div className="brand-logo">⚡</div>
+          <div className="brand" onClick={() => navigate('/')} style={{ cursor: 'pointer' }}>
+            <VidySetuMark size={36} />
             <div>
               <div className="brand-name">
-                Samadhan<span>Setu</span>
+                <span style={{ color: '#0E387A' }}>Vidy</span><span style={{ color: '#059669' }}>Setu</span>
               </div>
               <div className="brand-subtitle">
                 <Trans text="Civic Problem Resolution Platform" />
@@ -382,12 +442,12 @@ export default function LoginPage({ defaultMode = 'login' }) {
               </h1>
 
               <p className="info-description">
-                <Trans text="Access SamadhanSetu to report civic problems, track resolutions, collaborate on solutions and connect communities with institutions." />
+                <Trans text="Access VidySetu to report civic problems, track resolutions, collaborate on solutions and connect communities with institutions." />
               </p>
 
               {/* ECOSYSTEM FLOW */}
               <div className="ecosystem-mini">
-                <div className="ecosystem-title"><Trans text="SamadhanSetu Ecosystem" /></div>
+                <div className="ecosystem-title"><Trans text="VidySetu Ecosystem" /></div>
                 <div className="ecosystem-flow">
                   <div className="ecosystem-item">👤 <Trans text="Citizen" /></div>
                   <div className="ecosystem-arrow">→</div>
@@ -427,8 +487,8 @@ export default function LoginPage({ defaultMode = 'login' }) {
               <h2>{mode === 'signup' ? <Trans text="Create your account" /> : <Trans text="Welcome back" />}</h2>
               <p>
                 {mode === 'signup'
-                  ? <Trans text="Register to join the SamadhanSetu civic ecosystem." />
-                  : <Trans text="Sign in to access your SamadhanSetu portal." />}
+                  ? <Trans text="Register to join the VidySetu civic ecosystem." />
+                  : <Trans text="Sign in to access your VidySetu portal." />}
               </p>
             </div>
 
@@ -458,7 +518,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
                 <div className="role-grid">
                   <div
                     className={`role-card ${selectedRole === 'citizen' ? 'active' : ''}`}
-                    onClick={() => setSelectedRole('citizen')}
+                    onClick={() => handleRoleSelect('citizen')}
                   >
                     <div className="role-icon">👤</div>
                     <div className="role-name"><Trans text="Citizen" /></div>
@@ -466,7 +526,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
 
                   <div
                     className={`role-card ${selectedRole === 'government' ? 'active' : ''}`}
-                    onClick={() => setSelectedRole('government')}
+                    onClick={() => handleRoleSelect('government')}
                   >
                     <div className="role-icon">🏛️</div>
                     <div className="role-name"><Trans text="Government" /></div>
@@ -474,7 +534,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
 
                   <div
                     className={`role-card ${selectedRole === 'university_admin' ? 'active' : ''}`}
-                    onClick={() => setSelectedRole('university_admin')}
+                    onClick={() => handleRoleSelect('university_admin')}
                   >
                     <div className="role-icon">🏫</div>
                     <div className="role-name"><Trans text="University" /></div>
@@ -482,7 +542,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
 
                   <div
                     className={`role-card ${selectedRole === 'student' ? 'active' : ''}`}
-                    onClick={() => setSelectedRole('student')}
+                    onClick={() => handleRoleSelect('student')}
                   >
                     <div className="role-icon">🎓</div>
                     <div className="role-name"><Trans text="Student" /></div>
@@ -490,7 +550,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
 
                   <div
                     className={`role-card ${selectedRole === 'faculty' ? 'active' : ''}`}
-                    onClick={() => setSelectedRole('faculty')}
+                    onClick={() => handleRoleSelect('faculty')}
                   >
                     <div className="role-icon">👨‍🏫</div>
                     <div className="role-name"><Trans text="Faculty" /></div>
@@ -498,7 +558,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
 
                   <div
                     className={`role-card ${selectedRole === 'industry_employee' ? 'active' : ''}`}
-                    onClick={() => setSelectedRole('industry_employee')}
+                    onClick={() => handleRoleSelect('industry_employee')}
                   >
                     <div className="role-icon">🏭</div>
                     <div className="role-name"><Trans text="Industry" /></div>
@@ -991,7 +1051,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
                   />
                   <span>
                     <Trans text="I agree to the" /> <a href="#terms" onClick={(e) => e.preventDefault()}><Trans text="Terms of Use" /></a> <Trans text="and" />{' '}
-                    <a href="#privacy" onClick={(e) => e.preventDefault()}><Trans text="Privacy Policy" /></a> <Trans text="of SamadhanSetu." />
+                    <a href="#privacy" onClick={(e) => e.preventDefault()}><Trans text="Privacy Policy" /></a> <Trans text="of VidySetu." />
                   </span>
                 </label>
               )}

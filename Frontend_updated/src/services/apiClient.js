@@ -5,7 +5,7 @@ const strippedBaseUrl = rawBaseUrl.replace(/\/+$/, '');
 const API_BASE_URL = strippedBaseUrl.endsWith('/api') ? strippedBaseUrl : `${strippedBaseUrl}/api`;
 
 /**
- * Universal API Client for Samadhan Setu / Concordia.
+ * Universal API Client for VidySetu / Concordia.
  * Centralizes authentication headers, base URLs, and response/error parsing.
  */
 async function request(endpoint, options = {}) {
@@ -71,13 +71,13 @@ async function request(endpoint, options = {}) {
 }
 
 export const apiClient = {
-  get: (endpoint, params = {}) => {
+  get: (endpoint, params = {}, options = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
       if (v !== undefined && v !== null && v !== '') qs.append(k, String(v));
     });
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    return request(`${endpoint}${suffix}`, { method: 'GET' });
+    return request(`${endpoint}${suffix}`, { method: 'GET', ...options });
   },
 
   post: (endpoint, body) => request(endpoint, { method: 'POST', body }),

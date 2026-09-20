@@ -29,11 +29,14 @@ import GovernmentDashboardPage from './pages/government/DashboardPage';
 import ActiveProblemsPage from './pages/government/ActiveProblemsPage';
 import FacultiesPage from './pages/government/FacultiesPage';
 import GovStudentsPage from './pages/government/StudentsPage';
+import GovernmentMOUPage from './pages/government/MOUPage';
 import PastSuccessfulProjectsPage from './pages/government/PastSuccessfulProjectsPage';
 
 import IndustryDashboardPage from './pages/industry/DashboardPage';
 import ProposalsPage from './pages/industry/ProposalsPage';
 import CollaborationPage from './pages/industry/CollaborationPage';
+import EmployeeMyProjectsPage from './pages/industry/EmployeeMyProjectsPage';
+import IndustryMOUPage from './pages/industry/IndustryMOUPage';
 import PastProjectsPage from './pages/PastProjectsPage';
 
 import LeaderboardPage from './pages/LeaderboardPage';
@@ -101,17 +104,27 @@ export default function App() {
         <Route path="/government/add-problem" element={<AddProblemPage />} />
         <Route path="/government/active-problems" element={<ActiveProblemsPage />} />
         <Route path="/government/faculties" element={<FacultiesPage />} />
-        <Route path="/government/students" element={<GovStudentsPage />} />
+        <Route path="/government/students" element={<Navigate to="/leaderboard" replace />} />
+        <Route path="/government/mou" element={<GovernmentMOUPage />} />
         <Route path="/government/solved" element={<PastSuccessfulProjectsPage />} />
       </Route>
 
-      {/* Industry Employee */}
+      {/* Industry Employee & Manager */}
       <Route element={<ProtectedRoute allowRoles={['industry_employee', 'industry']}><DashboardLayout /></ProtectedRoute>}>
         <Route path="/industry-employee/dashboard" element={<IndustryDashboardPage />} />
         <Route path="/industry-employee/add-problem" element={<AddProblemPage />} />
         <Route path="/industry-employee/proposals" element={<ProposalsPage />} />
         <Route path="/industry-employee/collaboration" element={<CollaborationPage />} />
         <Route path="/industry-employee/past-projects" element={<PastProjectsPage />} />
+        <Route path="/industry-employee/my-projects" element={<EmployeeMyProjectsPage />} />
+        <Route path="/industry-employee/mou" element={<IndustryMOUPage />} />
+        {/* Backward-compatible aliases */}
+        <Route path="/industry/dashboard" element={<Navigate to="/industry-employee/dashboard" replace />} />
+        <Route path="/industry/proposals" element={<Navigate to="/industry-employee/proposals" replace />} />
+        <Route path="/industry/collaboration" element={<Navigate to="/industry-employee/collaboration" replace />} />
+        <Route path="/industry/collaborations" element={<Navigate to="/industry-employee/collaboration" replace />} />
+        <Route path="/industry/past-projects" element={<Navigate to="/industry-employee/past-projects" replace />} />
+        <Route path="/industry/mou" element={<Navigate to="/industry-employee/mou" replace />} />
       </Route>
 
       {/* Shared across roles */}

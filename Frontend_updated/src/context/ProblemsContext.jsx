@@ -10,10 +10,16 @@ const ALLOCATION_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3-day window for accept
 function adaptSupabaseChallenge(ch) {
   const titleText = ch.title || '';
   const descText = ch.description || '';
+  const proj = ch.project || ch.rawSupabase?.project || null;
+  const uniName = ch.university_name || proj?.university_name || null;
+  const facName = ch.faculty_name || proj?.faculty_name || null;
+  const indName = ch.industry_name || proj?.industry_name || null;
+
   return {
     id: ch.challenge_id || ch.id,
     type: ch.status === 'solved' ? 'solved' : 'unsolved',
     status: ch.status || 'submitted',
+    current_milestone: ch.current_milestone || proj?.current_milestone || null,
     votes: 1,
     source: ch.submitted_by === 'government' ? 'government' : ch.submitted_by === 'industry' ? 'industry' : 'citizen',
     submissionDate: ch.created_at ? ch.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
@@ -24,11 +30,20 @@ function adaptSupabaseChallenge(ch) {
     trackingStep: 1,
     priorityLevel: 'new',
     aiPriority: 'NEW REPORT',
-    allocation: { queue: [], responses: {}, deadlineAt: null, allocatedTo: null, status: 'not_started' },
-    faculty: null,
+    allocation: {
+      queue: [],
+      responses: {},
+      deadlineAt: null,
+      allocatedTo: uniName,
+      status: proj ? 'allocated' : ch.status === 'routed' ? 'awaiting_allocation' : 'not_started',
+    },
+    faculty: facName ? { name: facName } : null,
+    faculty_name: facName,
+    university_name: uniName,
+    industry_name: indName,
     students: [],
     requiredTechnologies: [],
-    suggestedIndustries: [],
+    suggestedIndustries: indName ? [indName] : [],
     domain: 'General Civic',
     category: 'Civic Issue',
     title: { hi: titleText, en: titleText },
@@ -44,6 +59,11 @@ function adaptSupabaseChallenge(ch) {
       ch.video ? { kind: 'video', url: ch.video, name: 'Video' } : null,
       ch.document ? { kind: 'document', url: ch.document, name: 'Document' } : null,
     ].filter(Boolean),
+    university_rejections: ch.university_rejections || [],
+    government_rejection_reason: ch.government_rejection_reason || null,
+    government_reviewed_at: ch.government_reviewed_at || null,
+    government_reviewed_by: ch.government_reviewed_by || null,
+    project: proj,
     rawSupabase: ch,
   };
 }

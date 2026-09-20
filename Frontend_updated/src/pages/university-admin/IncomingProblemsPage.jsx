@@ -28,6 +28,26 @@ const statusClass = {
   project_created: 'badge-teal',
 };
 
+function parseList(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) {
+    return val
+      .flatMap((item) => (typeof item === 'string' ? item.split(',') : item))
+      .map((s) => (typeof s === 'string' ? s.trim() : String(s)))
+      .filter(Boolean);
+  }
+  if (typeof val === 'string') {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parseList(parsed);
+    } catch {
+      // not JSON
+    }
+    return val.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 export default function IncomingProblemsPage() {
   const { lang } = useLanguage();
   const { user } = useAuth();
@@ -40,7 +60,6 @@ export default function IncomingProblemsPage() {
   // Faculty state
   const [facultyRoster, setFacultyRoster] = useState([]);
   const [selectedFaculty, setSelectedFaculty] = useState({}); // { [challengeId]: [facultyObj, ...] }
-  const [facultyPickerVal, setFacultyPickerVal] = useState({}); // { [challengeId]: facultyId }
 
   // Rejection modal state
   const [rejectingItem, setRejectingItem] = useState(null);
@@ -139,24 +158,22 @@ export default function IncomingProblemsPage() {
   };
 
   // Faculty selection handlers (Part 7 & 8)
-  const addFacultyMentor = (cid) => {
-    const chosenId = facultyPickerVal[cid];
-    if (!chosenId) return;
-    const facObj = facultyRoster.find((f) => f.faculty_id === chosenId);
-    if (!facObj) return;
-
-    const currentList = selectedFaculty[cid] || [];
-    // Duplicate prevention (Part 8)
-    if (currentList.some((f) => f.faculty_id === chosenId)) {
-      showToast(<Trans text="Faculty member is already selected." />);
-      return;
-    }
-
-    setSelectedFaculty((prev) => ({
-      ...prev,
-      [cid]: [...currentList, facObj],
-    }));
-    setFacultyPickerVal((prev) => ({ ...prev, [cid]: '' }));
+  const toggleFaculty = (cid, facObj) => {
+    setSelectedFaculty((prev) => {
+      const list = prev[cid] || [];
+      const exists = list.some((f) => f.faculty_id === facObj.faculty_id);
+      if (exists) {
+        return {
+          ...prev,
+          [cid]: list.filter((f) => f.faculty_id !== facObj.faculty_id),
+        };
+      } else {
+        return {
+          ...prev,
+          [cid]: [...list, facObj],
+        };
+      }
+    });
   };
 
   const removeFacultyMentor = (cid, fid) => {
@@ -224,15 +241,15 @@ export default function IncomingProblemsPage() {
             const isBusy = submitting[cid];
             const isApproved = approvedState[cid] || status === 'accepted' || status === 'selected';
 
-            const skillsList = [
-              ...(analysis.required_skills || analysis.skills_required || []),
-              ...(analysis.required_technologies || analysis.technologies_suggested || []),
-            ];
+            const reqSkills = parseList(analysis.required_skills || analysis.skills_required);
+            const reqTech = parseList(analysis.required_technologies || analysis.technologies_suggested);
+
+            const isPendingDecision =
+              !isApproved &&
+              ['invited', 'recommended', 'pending', 'routed'].includes(status) &&
+              !['accepted', 'selected', 'project_created', 'rejected', 'expired', 'completed'].includes(status);
 
             const currentMentors = selectedFaculty[cid] || [];
-            const availableFaculty = facultyRoster.filter(
-              (f) => !currentMentors.some((m) => m.faculty_id === f.faculty_id)
-            );
 
             return (
               <div className="card" key={inv.match_id || cid}>
@@ -276,14 +293,65 @@ export default function IncomingProblemsPage() {
                     </div>
                   )}
 
-                  {skillsList.length > 0 && (
+                  {reqSkills.length > 0 && (
                     <div style={{ marginTop: 10 }}>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 4 }}>
-                        🛠️ <Trans text="Required Skills & Technologies:" />
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 6 }}>
+                        🛠️ <Trans text="Required Skills:" />
                       </div>
-                      <div className="skills-chips">
-                        {skillsList.map((skill, idx) => (
-                          <span className="skill-chip" key={`${skill}-${idx}`}>{skill}</span>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {reqSkills.map((skill, idx) => (
+                          <span
+                            key={`skill-${idx}`}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              padding: '4px 10px',
+                              background: '#eff6ff',
+                              color: '#1d4ed8',
+                              border: '1px solid #bfdbfe',
+                              borderRadius: 14,
+                              fontSize: 12,
+                              fontWeight: 500,
+                              whiteSpace: 'normal',
+                              wordBreak: 'break-word',
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            <span style={{ fontSize: 14, lineHeight: 1 }}>•</span> {skill}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {reqTech.length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 6 }}>
+                        💻 <Trans text="Required Technologies:" />
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {reqTech.map((tech, idx) => (
+                          <span
+                            key={`tech-${idx}`}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              padding: '4px 10px',
+                              background: '#f0fdf4',
+                              color: '#15803d',
+                              border: '1px solid #bbf7d0',
+                              borderRadius: 14,
+                              fontSize: 12,
+                              fontWeight: 500,
+                              whiteSpace: 'normal',
+                              wordBreak: 'break-word',
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            <span style={{ fontSize: 14, lineHeight: 1 }}>•</span> {tech}
+                          </span>
                         ))}
                       </div>
                     </div>
@@ -299,28 +367,30 @@ export default function IncomingProblemsPage() {
                   </div>
                 )}
 
-                {/* Approve / Reject Actions (Part 5) */}
-                {status === 'invited' && !isApproved && (
-                  <div className="proposal-card__actions" style={{ marginTop: 16 }}>
+                {/* Approve / Reject Actions — strictly for genuinely pending decisions */}
+                {isPendingDecision && (
+                  <div className="proposal-card__actions" style={{ marginTop: 16, display: 'flex', gap: 10 }}>
                     <button
                       className="btn btn-success btn-sm"
                       disabled={isBusy}
                       onClick={() => handleApprove(inv)}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
                     >
-                      {isBusy ? <Trans text="Processing..." /> : `✓ ${lang === 'hi' ? 'स्वीकार करें' : 'Approve'}`}
+                      {isBusy ? <Trans text="Processing..." /> : `✓ ${lang === 'hi' ? 'स्वीकार करें (Approve)' : 'Approve'}`}
                     </button>
                     <button
                       className="btn btn-danger btn-sm"
                       disabled={isBusy}
                       onClick={() => openRejectModal(inv)}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
                     >
-                      {isBusy ? <Trans text="Processing..." /> : `✕ ${lang === 'hi' ? 'अस्वीकार करें' : 'Reject'}`}
+                      {isBusy ? <Trans text="Processing..." /> : `✕ ${lang === 'hi' ? 'अस्वीकार करें (Reject)' : 'Reject'}`}
                     </button>
                   </div>
                 )}
 
-                {/* Faculty Mentor Assignment Section (Part 6, 7 & 8) */}
-                {isApproved && status !== 'rejected' && (
+                {/* Faculty Mentor Assignment Section — Selectable Faculty Table */}
+                {isApproved && status !== 'rejected' && status !== 'project_created' && (
                   <div
                     style={{
                       marginTop: 16,
@@ -330,7 +400,7 @@ export default function IncomingProblemsPage() {
                       borderRadius: 8,
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
                       <h4 style={{ margin: 0, color: '#0f172a' }}>
                         👨‍🏫 <Trans text="Assign Faculty Mentors" />
                       </h4>
@@ -339,99 +409,102 @@ export default function IncomingProblemsPage() {
                       </span>
                     </div>
 
-                    <p style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>
+                    <p style={{ fontSize: 13, color: '#64748b', marginBottom: 14 }}>
                       {lang === 'hi'
-                        ? 'इस अनुमोदित समस्या के मार्गदर्शन हेतु अपने विश्वविद्यालय के एक या अधिक फैकल्टी मेंटर्स चुनें।'
-                        : 'Select one or more faculty mentors from your university to guide this project.'}
+                        ? 'इस अनुमोदित समस्या के मार्गदर्शन हेतु अपने विश्वविद्यालय के फैकल्टी मेंटर्स का चयन करें। पहला चयनित फैकल्टी प्राथमिक मेंटर (Primary Mentor) होगा।'
+                        : 'Select faculty mentors from your university to guide this project. The first selected faculty member will be the Primary Mentor.'}
                     </p>
 
-                    {/* Selected Faculty List */}
-                    {currentMentors.length > 0 && (
-                      <div style={{ marginBottom: 14 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>
-                          <Trans text="Selected Faculty Mentors:" />
-                        </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                          {currentMentors.map((m, idx) => (
-                            <div
-                              key={m.faculty_id}
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: 6,
-                                padding: '5px 12px',
-                                background: '#ecfdf5',
-                                border: '1px solid #6ee7b7',
-                                borderRadius: 6,
-                                fontSize: 13,
-                                color: '#065f46',
-                              }}
-                            >
-                              <span>{idx === 0 ? '⭐' : '👨‍🏫'}</span>
-                              <strong>{m.faculty_id}</strong> — {m.faculty_name}
-                              <button
-                                type="button"
-                                onClick={() => removeFacultyMentor(cid, m.faculty_id)}
+                    {/* Selectable Faculty Table */}
+                    <div style={{ overflowX: 'auto', marginBottom: 14 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+                        <thead>
+                          <tr style={{ background: '#f1f5f9', borderBottom: '2px solid #cbd5e1', textAlign: 'left' }}>
+                            <th style={{ padding: '8px 12px', width: 40, textAlign: 'center' }}>
+                              <Trans text="Select" />
+                            </th>
+                            <th style={{ padding: '8px 12px' }}><Trans text="Faculty ID" /></th>
+                            <th style={{ padding: '8px 12px' }}><Trans text="Faculty Name" /></th>
+                            <th style={{ padding: '8px 12px' }}><Trans text="Department" /></th>
+                            <th style={{ padding: '8px 12px' }}><Trans text="Designation" /></th>
+                            <th style={{ padding: '8px 12px' }}><Trans text="Role" /></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {facultyRoster.map((fac) => {
+                            const isChecked = currentMentors.some((m) => m.faculty_id === fac.faculty_id);
+                            const mentorIndex = currentMentors.findIndex((m) => m.faculty_id === fac.faculty_id);
+                            const roleLabel = isChecked ? (mentorIndex === 0 ? 'Primary Mentor ⭐' : 'Co-Mentor 👨‍🏫') : '—';
+                            return (
+                              <tr
+                                key={fac.faculty_id}
                                 style={{
-                                  background: 'transparent',
-                                  border: 'none',
-                                  color: '#dc2626',
+                                  borderBottom: '1px solid #e2e8f0',
+                                  background: isChecked ? '#f0fdf4' : 'transparent',
                                   cursor: 'pointer',
-                                  fontWeight: 'bold',
-                                  marginLeft: 4,
                                 }}
-                                title="Remove"
+                                onClick={() => toggleFaculty(cid, fac)}
                               >
-                                ✕
-                              </button>
-                            </div>
-                          ))}
-                        </div>
+                                <td style={{ padding: '8px 12px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => toggleFaculty(cid, fac)}
+                                    style={{ cursor: 'pointer', width: 16, height: 16 }}
+                                  />
+                                </td>
+                                <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontWeight: 600 }}>{fac.faculty_id}</td>
+                                <td style={{ padding: '8px 12px', fontWeight: 500 }}>{fac.faculty_name}</td>
+                                <td style={{ padding: '8px 12px', color: '#475569' }}>{fac.department}</td>
+                                <td style={{ padding: '8px 12px', color: '#64748b' }}>{fac.designation}</td>
+                                <td style={{ padding: '8px 12px' }}>
+                                  {isChecked ? (
+                                    <span className={`badge ${mentorIndex === 0 ? 'badge-teal' : 'badge-blue'}`} style={{ fontSize: 11 }}>
+                                      {roleLabel}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: '#94a3b8' }}>—</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Selection Summary & Confirm Action */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                      <div style={{ fontSize: 13, color: '#334155' }}>
+                        {currentMentors.length === 0 ? (
+                          <span style={{ color: '#dc2626' }}>⚠️ <Trans text="Please select at least one faculty mentor." /></span>
+                        ) : (
+                          <span>
+                            ✅ <strong>{currentMentors.length}</strong> <Trans text="mentor(s) selected:" />{' '}
+                            <strong>{currentMentors[0].faculty_name}</strong> ({currentMentors[0].faculty_id} - Primary)
+                            {currentMentors.length > 1 && ` + ${currentMentors.length - 1} Co-Mentor(s)`}
+                          </span>
+                        )}
                       </div>
-                    )}
-
-                    {/* Faculty Picker Controls */}
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <select
-                        value={facultyPickerVal[cid] || ''}
-                        onChange={(e) => setFacultyPickerVal((prev) => ({ ...prev, [cid]: e.target.value }))}
-                        style={{
-                          padding: '8px 12px',
-                          borderRadius: 6,
-                          border: '1px solid #cbd5e1',
-                          flex: '1 1 300px',
-                          fontSize: 13,
-                          background: '#fff',
-                        }}
-                      >
-                        <option value="">
-                          {lang === 'hi' ? '-- फैकल्टी चुनें (आईडी एवं नाम) --' : '-- Select Faculty (ID & Name) --'}
-                        </option>
-                        {availableFaculty.map((f) => (
-                          <option key={f.faculty_id} value={f.faculty_id}>
-                            {f.faculty_id} — {f.faculty_name} ({f.department})
-                          </option>
-                        ))}
-                      </select>
-
-                      <button
-                        type="button"
-                        className="btn btn-outline btn-sm"
-                        disabled={!facultyPickerVal[cid]}
-                        onClick={() => addFacultyMentor(cid)}
-                      >
-                        + <Trans text="Add Mentor" />
-                      </button>
 
                       <button
                         type="button"
                         className="btn btn-primary btn-sm"
                         disabled={isBusy || currentMentors.length === 0}
                         onClick={() => handleConfirmFaculty(inv)}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
                       >
-                        {isBusy ? <Trans text="Processing..." /> : <Trans text="Confirm Faculty Assignment" />}
+                        {isBusy ? <Trans text="Processing..." /> : `👨‍🏫 ${lang === 'hi' ? 'चयनित फैकल्टी आवंटित करें' : 'Assign Selected Faculty'}`}
                       </button>
                     </div>
+                  </div>
+                )}
+
+                {/* Project Active status */}
+                {status === 'project_created' && (
+                  <div style={{ marginTop: 12, padding: '10px 14px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 6, color: '#065f46' }}>
+                    ✅ <strong><Trans text="Project Active:" /></strong>{' '}
+                    <Trans text="Faculty assigned and collaborative project created. Top-5 Industry matching is in progress." />
                   </div>
                 )}
 

@@ -126,6 +126,33 @@ class GovernmentProblemItem(BaseModel):
     faculty_name: Optional[str] = None
     industry_name: Optional[str] = None
     milestone_progress_pct: Optional[float] = None
+    government_rejection_reason: Optional[str] = None
+    government_reviewed_at: Optional[str] = None
+    government_reviewed_by: Optional[str] = None
+    university_rejections: List[Dict[str, Any]] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class GovernmentRejectRequest(BaseModel):
+    """Schema for Government declining a challenge with mandatory reason."""
+
+    reason: str = Field(..., min_length=1, description="Mandatory reason for declining the problem statement")
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class GovernmentDecisionResponse(BaseModel):
+    """Schema for Government approve/reject responses."""
+
+    success: bool
+    challenge_id: str
+    status: str
+    message: str
+    government_rejection_reason: Optional[str] = None
+    government_reviewed_at: Optional[str] = None
+    government_reviewed_by: Optional[str] = None
+    university_matches: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(extra="ignore")
 

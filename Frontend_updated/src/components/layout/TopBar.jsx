@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
+import { VidySetuMark } from '../shared/VidySetuLogo.jsx';
 
 export default function TopBar() {
   const { t, lang, setLang } = useLanguage();
@@ -14,7 +15,10 @@ export default function TopBar() {
 
   return (
     <header className="topbar">
-      <div className="topbar__logo">⚡ {t.brand}<span>{t.brandSuffix}</span></div>
+      <div className="topbar__logo" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <VidySetuMark size={24} />
+        <span>{t.brand}<span>{t.brandSuffix}</span></span>
+      </div>
       <div className="topbar__actions">
         <div className="lang-toggle" role="group" aria-label={t.langLabel}>
           <button

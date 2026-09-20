@@ -224,11 +224,12 @@ def list_industry_invitations(
 )
 def get_challenge(
     challenge_id: str,
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
     service: ChallengeService = Depends(get_challenge_service),
 ):
     """Retrieves single challenge by ID and hydrates associated ai_analysis record if available."""
     try:
-        data = service.get_challenge(challenge_id)
+        data = service.get_challenge(challenge_id, user=current_user)
         return {
             "success": True,
             "data": data,

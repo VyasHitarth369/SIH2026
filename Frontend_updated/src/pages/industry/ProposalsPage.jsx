@@ -1,50 +1,67 @@
+import { useState, useEffect, useCallback } from 'react';
 import Trans from '../../components/shared/Trans.jsx';
-import { useMemo, useState, useEffect, useCallback } from 'react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
-import { collaborationProposals as initialProposals, domainList, universityNames } from '../../data/orgData';
 import { matchingService } from '../../services/matchingService';
 
 const statusClass = {
-  'Pending Review': 'badge-amber',
-  Accepted: 'badge-teal',
-  Rejected: 'badge-coral',
   invited: 'badge-amber',
   recommended: 'badge-blue',
   accepted: 'badge-teal',
   rejected: 'badge-coral',
 };
 
+function parseList(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) return val.filter(Boolean);
+  if (typeof val === 'string') {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch {
+      // not json
+    }
+    return val
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
 export default function ProposalsPage() {
   const { lang } = useLanguage();
   const { user } = useAuth();
   const { showToast } = useToast();
 
-  const [activeTab, setActiveTab] = useState('invitations'); // invitations | interests | legacy
-  const [proposals, setProposals] = useState(initialProposals);
-  const [filters, setFilters] = useState({ domain: '', university: '', technology: '', project: '', status: '' });
-
-  // Phase 25 live state
   const [liveInvitations, setLiveInvitations] = useState([]);
-  const [loadingInvitations, setLoadingInvitations] = useState(false);
-  const [eligibleProjects, setEligibleProjects] = useState([]);
-  const [loadingProjects, setLoadingProjects] = useState(false);
+  const [loadingInvitations, setLoadingInvitations] = useState(true);
   const [submitting, setSubmitting] = useState({});
-  const [interestMessages, setInterestMessages] = useState({});
+  const [selectedEmployees, setSelectedEmployees] = useState({}); // { [projectId]: interestId }
+
+  // Reject Modal State
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectTarget, setRejectTarget] = useState(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejectError, setRejectError] = useState('');
+
+  const isManager = Boolean(
+    user?.is_spoc ||
+    user?.approval_authority ||
+    user?.stakeholder?.approval_authority
+  );
 
   const industryId =
     user?.stakeholder?.industry_id ||
     user?.profile?.industry_id ||
-    (user?.role === 'industry_employee' ? 'IND002' : null);
-
-  const isSpoc = Boolean(
-    user?.role === 'industry_employee' &&
-      (user?.is_spoc || user?.approval_authority || user?.stakeholder?.approval_authority)
-  );
+    null;
 
   const fetchInvitations = useCallback(async () => {
-    if (!industryId) return;
+    if (!isManager || !industryId) {
+      setLoadingInvitations(false);
+      return;
+    }
     try {
       setLoadingInvitations(true);
       const data = await matchingService.listIndustryInvitations(industryId);
@@ -54,424 +71,430 @@ export default function ProposalsPage() {
     } finally {
       setLoadingInvitations(false);
     }
-  }, [industryId]);
-
-  const fetchEligibleProjects = useCallback(async () => {
-    try {
-      setLoadingProjects(true);
-      const data = await matchingService.listEligibleProjectsForEmployee();
-      setEligibleProjects(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.warn('Could not load eligible projects for employee:', err.message);
-    } finally {
-      setLoadingProjects(false);
-    }
-  }, []);
+  }, [isManager, industryId]);
 
   useEffect(() => {
-    let active = true;
-    if (activeTab === 'invitations' && industryId) {
-      matchingService
-        .listIndustryInvitations(industryId)
-        .then((data) => {
-          if (active) setLiveInvitations(Array.isArray(data) ? data : []);
-        })
-        .catch((err) => console.warn('Could not load industry invitations:', err.message));
-    } else if (activeTab === 'interests') {
-      matchingService
-        .listEligibleProjectsForEmployee()
-        .then((data) => {
-          if (active) setEligibleProjects(Array.isArray(data) ? data : []);
-        })
-        .catch((err) => console.warn('Could not load eligible projects for employee:', err.message));
-    }
-    return () => {
-      active = false;
-    };
-  }, [activeTab, industryId]);
+    fetchInvitations();
+  }, [fetchInvitations]);
 
-  const decideSpoc = async (inv, action) => {
+  const handleApprove = async (inv) => {
     const cid = inv.challenge_id;
     try {
       setSubmitting((prev) => ({ ...prev, [cid]: true }));
       await matchingService.respondIndustryMatch(
         cid,
         industryId,
-        action,
-        `Decision by SPOC ${user?.full_name || ''}`
+        'accept',
+        `Approved by Industry Manager ${user?.full_name || ''}`
       );
-      showToast(
-        <Trans
-          text={action === 'accept' ? 'Collaboration proposal accepted.' : 'Collaboration proposal rejected.'}
-        />
-      );
+      showToast(<Trans text="Industry collaboration proposal accepted successfully." />);
       await fetchInvitations();
     } catch (err) {
-      showToast(<Trans text={`Action failed: ${err.message}`} />);
+      showToast(<Trans text={`Approval failed: ${err.message}`} />);
     } finally {
       setSubmitting((prev) => ({ ...prev, [cid]: false }));
     }
   };
 
-  const submitEmployeeInterest = async (projectId) => {
-    const msg = (interestMessages[projectId] || '').trim();
+  const openRejectModal = (inv) => {
+    setRejectTarget(inv);
+    setRejectReason('');
+    setRejectError('');
+    setRejectModalOpen(true);
+  };
+
+  const handleConfirmReject = async () => {
+    if (!rejectReason.trim()) {
+      setRejectError(
+        lang === 'hi'
+          ? 'अस्वीकृति का कारण अनिवार्य है।'
+          : 'A mandatory rejection reason must be provided.'
+      );
+      return;
+    }
+
+    const cid = rejectTarget?.challenge_id;
+    try {
+      setSubmitting((prev) => ({ ...prev, [cid]: true }));
+      await matchingService.respondIndustryMatch(
+        cid,
+        industryId,
+        'reject',
+        rejectReason.trim()
+      );
+      showToast(<Trans text="Proposal rejected with recorded feedback." />);
+      setRejectModalOpen(false);
+      setRejectTarget(null);
+      await fetchInvitations();
+    } catch (err) {
+      setRejectError(err.message);
+    } finally {
+      setSubmitting((prev) => ({ ...prev, [cid]: false }));
+    }
+  };
+
+  const handleAssignMentor = async (projectId) => {
+    const interestId = selectedEmployees[projectId];
+    if (!interestId) {
+      showToast(<Trans text="Please select an interested employee to assign as Industry Mentor." />);
+      return;
+    }
+
     try {
       setSubmitting((prev) => ({ ...prev, [projectId]: true }));
-      await matchingService.expressEmployeeInterest(projectId, msg);
-      showToast(<Trans text="Interest expressed successfully." />);
-      setInterestMessages((prev) => ({ ...prev, [projectId]: '' }));
-      await fetchEligibleProjects();
+      await matchingService.selectEmployeeMentor(
+        projectId,
+        interestId,
+        `Assigned as official Industry Mentor by ${user?.full_name || ''}`
+      );
+      showToast(<Trans text="Official Industry Mentor assigned successfully." />);
+      await fetchInvitations();
     } catch (err) {
-      showToast(<Trans text={`Expression failed: ${err.message}`} />);
+      showToast(<Trans text={`Mentor assignment failed: ${err.message}`} />);
     } finally {
       setSubmitting((prev) => ({ ...prev, [projectId]: false }));
     }
   };
 
-  const filteredLegacy = useMemo(
-    () =>
-      proposals.filter((p) => {
-        if (filters.domain && p.domain !== filters.domain) return false;
-        if (filters.university && p.university !== filters.university) return false;
-        if (filters.status && p.status !== filters.status) return false;
-        if (
-          filters.technology &&
-          !p.requiredTechnologies.some((t) => t.toLowerCase().includes(filters.technology.toLowerCase()))
-        )
-          return false;
-        if (filters.project && !p.projectName.toLowerCase().includes(filters.project.toLowerCase())) return false;
-        return true;
-      }),
-    [proposals, filters]
-  );
-
-  const decideLegacy = (id, status) => {
-    setProposals((prev) => prev.map((p) => (p.id === id ? { ...p, status } : p)));
-    showToast(<Trans text={status === 'Accepted' ? 'Proposal accepted.' : 'Proposal rejected.'} />);
-  };
+  if (!isManager) {
+    return (
+      <div className="card" style={{ padding: '32px', textAlign: 'center', marginTop: 24 }}>
+        <span style={{ fontSize: 48 }}>🔒</span>
+        <h2 style={{ marginTop: 12 }}><Trans text="Access Restricted" /></h2>
+        <p style={{ color: 'var(--text-muted)', marginTop: 8 }}>
+          {lang === 'hi'
+            ? 'सहयोग प्रस्ताव केवल अधिकृत उद्योग प्रबंधक (SPOC) के लिए सुलभ हैं।'
+            : 'Collaboration proposals are accessible only by authorized Industry Managers / SPOCs.'}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div>
       <div className="page-head">
         <div>
-          <h1>{<Trans text="Industry Collaboration & Proposals" />}</h1>
+          <h1><Trans text="Industry Collaboration Proposals" /></h1>
           <p>
             {lang === 'hi'
-              ? 'विश्वविद्यालयों से साझेदारी प्रस्ताव एवं कॉर्पोरेट इनोवेशन प्रोजेक्ट्स।'
-              : 'University partnership proposals and corporate innovation projects.'}
+              ? 'शीर्ष-5 मिलान द्वारा आपकी कंपनी को अग्रेषित प्रस्तावों की समीक्षा करें और उद्योग मेंटर नियुक्त करें।'
+              : 'Review collaboration proposals routed to your organization via Top-5 matching and assign official Industry Mentors.'}
           </p>
         </div>
       </div>
 
-      <div className="card" style={{ padding: '12px 20px' }}>
-        <div className="filter-tabs">
-          <div
-            className={`filter-tab${activeTab === 'invitations' ? ' active' : ''}`}
-            onClick={() => setActiveTab('invitations')}
-          >
-            🏢 {<Trans text="Collaboration Requests (SPOC)" />}
-          </div>
-          <div
-            className={`filter-tab${activeTab === 'interests' ? ' active' : ''}`}
-            onClick={() => setActiveTab('interests')}
-          >
-            👷 {<Trans text="Employee Project Interest" />}
-          </div>
-          <div
-            className={`filter-tab${activeTab === 'legacy' ? ' active' : ''}`}
-            onClick={() => setActiveTab('legacy')}
-          >
-            📑 {<Trans text="University Proposals (All)" />}
-          </div>
+      {loadingInvitations && (
+        <div className="card" style={{ padding: '32px', textAlign: 'center' }}>
+          <p><Trans text="Loading collaboration proposals from server..." /></p>
         </div>
-      </div>
+      )}
 
-      {/* TAB 1: SPOC COLLABORATION REQUESTS */}
-      {activeTab === 'invitations' && (
-        <div>
-          {loadingInvitations && (
-            <div className="card" style={{ padding: 16, textAlign: 'center' }}>
-              <p>{<Trans text="Loading collaboration requests from server..." />}</p>
-            </div>
-          )}
-
+      {!loadingInvitations && liveInvitations.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {liveInvitations.map((inv) => {
             const ch = inv.challenge || {};
             const analysis = inv.ai_analysis || {};
-            const isBusy = submitting[inv.challenge_id];
-            const canDecide = isSpoc && (inv.status === 'invited' || inv.status === 'recommended');
+            const proj = inv.project || {};
+            const isBusy = submitting[inv.challenge_id] || (proj.project_id && submitting[proj.project_id]);
+            const isPending = inv.status === 'invited' || inv.status === 'recommended';
+            const isAccepted = inv.status === 'accepted';
+            const isRejected = inv.status === 'rejected';
+
+            const skills = parseList(analysis.skills_required || ch.expected_solution);
+            const techs = parseList(analysis.technologies_suggested);
+            const interestedList = inv.interested_employees || [];
+            const assignedMentor = inv.assigned_mentor;
 
             return (
               <div className="card" key={inv.match_id || inv.challenge_id}>
-                <div className="gov-card__head">
+                <div className="gov-card__head" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                   <span className="badge badge-violet">
-                    {<Trans text="Priority Rank:" />} #{inv.rank}
+                    <Trans text="Priority Rank:" /> #{inv.rank}
                   </span>
                   <span className={`badge ${statusClass[inv.status] || 'badge-blue'}`}>
                     {inv.status}
                   </span>
                   <span className="badge badge-teal">
-                    🎯 {<Trans text="Match Score:" />} {Number(inv.match_score).toFixed(1)}%
+                    🎯 <Trans text="Match Score:" /> {Number(inv.match_score).toFixed(1)}%
                   </span>
-                </div>
-
-                <h3 className="problem-title">{ch.title || `Challenge #${inv.challenge_id}`}</h3>
-                <p className="problem-desc">{ch.description || 'No description provided.'}</p>
-
-                <div className="problem-meta">
-                  📍 <Trans text="Location:" /> {ch.city || 'Jharkhand'} · <Trans text="Category:" />{' '}
-                  <strong>{ch.category || 'Civic Issue'}</strong> · <Trans text="Scope:" />{' '}
-                  {ch.impact_scope || 'Area Specific'}
-                </div>
-
-                {inv.match_reason && (
-                  <div className="problem-meta" style={{ marginTop: 6, color: '#4b5563', fontStyle: 'italic' }}>
-                    💡 <Trans text="Match Rationale:" /> {inv.match_reason}
-                  </div>
-                )}
-
-                {(analysis.skills_required?.length > 0 || analysis.technologies_suggested?.length > 0) && (
-                  <div className="skills-block">
-                    <div className="skills-block__label">🛠️ <Trans text="Required Capabilities & Tech:" /></div>
-                    <div className="skills-chips">
-                      {[...(analysis.skills_required || []), ...(analysis.technologies_suggested || [])].map(
-                        (s, i) => (
-                          <span className="skill-chip" key={`${s}-${i}`}>
-                            {s}
-                          </span>
-                        )
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {canDecide ? (
-                  <div className="proposal-card__actions" style={{ marginTop: 14 }}>
-                    <button
-                      className="btn btn-success btn-sm"
-                      disabled={isBusy}
-                      onClick={() => decideSpoc(inv, 'accept')}
-                    >
-                      {isBusy ? <Trans text="Processing..." /> : <Trans text="Accept Collaboration" />}
-                    </button>
-                    <button
-                      className="btn btn-danger btn-sm"
-                      disabled={isBusy}
-                      onClick={() => decideSpoc(inv, 'reject')}
-                    >
-                      {isBusy ? <Trans text="Processing..." /> : <Trans text="Reject" />}
-                    </button>
-                  </div>
-                ) : !isSpoc ? (
-                  <div style={{ marginTop: 10, fontSize: '0.85rem', color: '#6b7280' }}>
-                    🔒 <Trans text="SPOC approval authority required to submit official institutional decisions." />
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 12, padding: '8px 12px', background: '#f3f4f6', borderRadius: 6 }}>
-                    <strong><Trans text="Status:" /></strong> {inv.status}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {!loadingInvitations && liveInvitations.length === 0 && (
-            <div className="card empty-state">
-              <span className="empty-state__icon">🤝</span>
-              <Trans text="No active collaboration requests routed to your organization yet." />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* TAB 2: EMPLOYEE PROJECT INTEREST */}
-      {activeTab === 'interests' && (
-        <div>
-          {loadingProjects && (
-            <div className="card" style={{ padding: 16, textAlign: 'center' }}>
-              <p>{<Trans text="Loading active company projects..." />}</p>
-            </div>
-          )}
-
-          {eligibleProjects.map((p) => {
-            const hasExpressed = Boolean(p.user_interest_status);
-            const isBusy = submitting[p.project_id];
-
-            return (
-              <div className="card" key={p.project_id}>
-                <div className="gov-card__head">
-                  <span className="badge badge-blue">
-                    {<Trans text="Project ID:" />} {p.project_id}
-                  </span>
-                  <span className="badge badge-teal">
-                    {p.status || 'Active'}
-                  </span>
-                  {p.university_name && (
-                    <span className="badge badge-violet">
-                      🏫 {p.university_name}
+                  {proj.project_id && (
+                    <span className="badge badge-outline">
+                      📁 {proj.project_id}
                     </span>
                   )}
                 </div>
 
-                <h3 className="problem-title">{p.project_title || 'Innovation Project'}</h3>
-                {p.challenge_title && (
-                  <p className="problem-meta">
-                    🎯 <Trans text="Linked Problem Statement:" /> <strong>{p.challenge_title}</strong>
-                  </p>
+                <h3 className="problem-title" style={{ marginTop: 10 }}>
+                  {ch.title || `Challenge #${inv.challenge_id}`}
+                </h3>
+
+                <p className="problem-desc">
+                  {ch.description || 'No description provided.'}
+                </p>
+
+                <div className="problem-meta" style={{ marginTop: 8 }}>
+                  📍 <Trans text="Location:" /> {ch.city || ch.location || 'Jharkhand'} ·{' '}
+                  <Trans text="Scope:" /> <strong>{ch.impact_scope || 'Area Specific'}</strong>
+                  {inv.university_name && (
+                    <> · 🏫 <Trans text="University:" /> <strong>{inv.university_name}</strong></>
+                  )}
+                  {inv.faculty_name && (
+                    <> · 👨‍🏫 <Trans text="Faculty:" /> <strong>{inv.faculty_name}</strong></>
+                  )}
+                </div>
+
+                {inv.match_reason && (
+                  <div style={{ marginTop: 8, padding: '8px 12px', background: '#f8fafc', borderRadius: 6, fontSize: '0.9rem', color: '#475569', fontStyle: 'italic' }}>
+                    💡 <strong><Trans text="Match Rationale:" /></strong> {inv.match_reason}
+                  </div>
                 )}
 
-                {hasExpressed ? (
-                  <div style={{ marginTop: 12, padding: '10px 14px', background: '#ecfdf5', borderRadius: 6, border: '1px solid #86efac' }}>
-                    <div style={{ fontWeight: 600, color: '#065f46', marginBottom: 4 }}>
-                      ✅ <Trans text="Interest Expressed" /> ({p.user_interest_status})
+                {/* Skills & Technologies */}
+                {(skills.length > 0 || techs.length > 0) && (
+                  <div className="skills-block" style={{ marginTop: 12 }}>
+                    <div className="skills-block__label" style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+                      🛠️ <Trans text="Required Capabilities & Suggested Tech:" />
                     </div>
-                    {p.user_interest_message && (
-                      <div style={{ fontSize: '0.9rem', color: '#047857', fontStyle: 'italic' }}>
-                        “{p.user_interest_message}”
-                      </div>
+                    <div className="skills-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {skills.map((s, i) => (
+                        <span className="skill-chip" key={`s-${i}`} style={{ background: '#e0f2fe', color: '#0369a1', padding: '4px 8px', borderRadius: 4, fontSize: 12.5 }}>
+                          • {s}
+                        </span>
+                      ))}
+                      {techs.map((t, i) => (
+                        <span className="skill-chip" key={`t-${i}`} style={{ background: '#f3e8ff', color: '#6b21a8', padding: '4px 8px', borderRadius: 4, fontSize: 12.5 }}>
+                          ⚙️ {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* PENDING ACTIONS: APPROVE / REJECT */}
+                {isPending && (
+                  <div className="proposal-card__actions" style={{ marginTop: 16, display: 'flex', gap: 10 }}>
+                    <button
+                      className="btn btn-success btn-sm"
+                      disabled={isBusy}
+                      onClick={() => handleApprove(inv)}
+                      style={{ padding: '8px 18px', fontWeight: 600 }}
+                    >
+                      {isBusy ? <Trans text="Processing..." /> : <Trans text="[APPROVE]" />}
+                    </button>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      disabled={isBusy}
+                      onClick={() => openRejectModal(inv)}
+                      style={{ padding: '8px 18px', fontWeight: 600 }}
+                    >
+                      <Trans text="[REJECT]" />
+                    </button>
+                  </div>
+                )}
+
+                {/* REJECTED DISPLAY */}
+                {isRejected && (
+                  <div style={{ marginTop: 14, padding: '10px 14px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 6 }}>
+                    <strong style={{ color: '#991b1b' }}>❌ <Trans text="Proposal Rejected" /></strong>
+                    {inv.response_note && (
+                      <p style={{ margin: '4px 0 0 0', color: '#7f1d1d', fontSize: '0.9rem' }}>
+                        <Trans text="Reason:" /> {inv.response_note}
+                      </p>
                     )}
                   </div>
-                ) : (
-                  <div style={{ marginTop: 14, background: '#f8fafc', padding: 12, borderRadius: 6 }}>
-                    <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: 6 }}>
-                      {<Trans text="Express Interest in this Project (Expertise / Proposed Contribution):" />}
-                    </label>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <input
-                        type="text"
-                        placeholder={
-                          lang === 'hi'
-                            ? 'अपनी विशेषज्ञता एवं योगदान का विवरण लिखें...'
-                            : 'Describe your expertise, technical capabilities, or availability...'
-                        }
-                        value={interestMessages[p.project_id] || ''}
-                        onChange={(e) =>
-                          setInterestMessages((prev) => ({ ...prev, [p.project_id]: e.target.value }))
-                        }
-                        style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: 4 }}
-                      />
-                      <button
-                        className="btn btn-primary btn-sm"
-                        disabled={isBusy}
-                        onClick={() => submitEmployeeInterest(p.project_id)}
-                      >
-                        {isBusy ? <Trans text="Submitting..." /> : <Trans text="Express Interest" />}
-                      </button>
+                )}
+
+                {/* ACCEPTED & MENTOR SELECTION */}
+                {isAccepted && (
+                  <div style={{ marginTop: 16, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <h4 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: '#0f172a' }}>
+                        👷 <Trans text="Interested Employees & Mentor Assignment" />
+                      </h4>
+                      {assignedMentor ? (
+                        <span className="badge badge-teal" style={{ fontWeight: 600 }}>
+                          ⭐ <Trans text="Mentor Assigned" />
+                        </span>
+                      ) : (
+                        <span className="badge badge-amber">
+                          ⏳ <Trans text="Mentor Selection Open" />
+                        </span>
+                      )}
                     </div>
+
+                    {assignedMentor && (
+                      <div style={{ padding: '10px 14px', background: '#ecfdf5', border: '1px solid #86efac', borderRadius: 6, marginBottom: 12 }}>
+                        <div style={{ fontWeight: 600, color: '#065f46' }}>
+                          ⭐ <Trans text="Official Industry Mentor:" /> {assignedMentor.employee_name} ({assignedMentor.employee_id})
+                        </div>
+                        <div style={{ fontSize: '0.85rem', color: '#047857', marginTop: 2 }}>
+                          {assignedMentor.department} · {assignedMentor.designation}
+                        </div>
+                      </div>
+                    )}
+
+                    {interestedList.length > 0 ? (
+                      <div>
+                        <table className="data-table" style={{ width: '100%', fontSize: '0.9rem', borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>
+                              <th style={{ padding: '8px 12px', width: 60 }}><Trans text="Select" /></th>
+                              <th style={{ padding: '8px 12px' }}><Trans text="Employee ID" /></th>
+                              <th style={{ padding: '8px 12px' }}><Trans text="Employee Name" /></th>
+                              <th style={{ padding: '8px 12px' }}><Trans text="Department" /></th>
+                              <th style={{ padding: '8px 12px' }}><Trans text="Designation" /></th>
+                              <th style={{ padding: '8px 12px' }}><Trans text="Status" /></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {interestedList.map((emp) => {
+                              const isSelected = emp.status === 'selected';
+                              const currentSelectedId = selectedEmployees[proj.project_id];
+
+                              return (
+                                <tr key={emp.interest_id} style={{ borderBottom: '1px solid #f1f5f9', background: isSelected ? '#f0fdf4' : 'transparent' }}>
+                                  <td style={{ padding: '8px 12px' }}>
+                                    {!assignedMentor ? (
+                                      <input
+                                        type="radio"
+                                        name={`mentor-${proj.project_id}`}
+                                        checked={currentSelectedId === emp.interest_id}
+                                        onChange={() =>
+                                          setSelectedEmployees((prev) => ({
+                                            ...prev,
+                                            [proj.project_id]: emp.interest_id,
+                                          }))
+                                        }
+                                      />
+                                    ) : isSelected ? (
+                                      '⭐'
+                                    ) : (
+                                      '—'
+                                    )}
+                                  </td>
+                                  <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>{emp.employee_id}</td>
+                                  <td style={{ padding: '8px 12px', fontWeight: 500 }}>{emp.employee_name || emp.employee_id}</td>
+                                  <td style={{ padding: '8px 12px' }}>{emp.department || '—'}</td>
+                                  <td style={{ padding: '8px 12px' }}>{emp.designation || '—'}</td>
+                                  <td style={{ padding: '8px 12px' }}>
+                                    <span className={`badge ${isSelected ? 'badge-teal' : 'badge-blue'}`}>
+                                      {emp.status}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+
+                        {!assignedMentor && proj.project_id && (
+                          <div style={{ marginTop: 12 }}>
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={!selectedEmployees[proj.project_id] || isBusy}
+                              onClick={() => handleAssignMentor(proj.project_id)}
+                              style={{ padding: '8px 16px' }}
+                            >
+                              {isBusy ? <Trans text="Assigning..." /> : <Trans text="[Select Employee / Assign Mentor]" />}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', fontStyle: 'italic', margin: '6px 0 0 0' }}>
+                        <Trans text="No employees from your company have expressed interest in this project yet." />
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
             );
           })}
-
-          {!loadingProjects && eligibleProjects.length === 0 && (
-            <div className="card empty-state">
-              <span className="empty-state__icon">💼</span>
-              <Trans text="No projects currently partnered with your organization are open for employee interest." />
-            </div>
-          )}
         </div>
       )}
 
-      {/* TAB 3: LEGACY / ALL PROPOSALS */}
-      {activeTab === 'legacy' && (
-        <div>
-          <div className="card">
-            <div className="grid grid--location">
-              <div className="field">
-                <label>{<Trans text="Domain" />}</label>
-                <select value={filters.domain} onChange={(e) => setFilters((f) => ({ ...f, domain: e.target.value }))}>
-                  <option value="">{<Trans text="All Domains" />}</option>
-                  {domainList.map((d) => (
-                    <option key={d} value={d}>
-                      {<Trans text={d} />}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label>{<Trans text="University" />}</label>
-                <select value={filters.university} onChange={(e) => setFilters((f) => ({ ...f, university: e.target.value }))}>
-                  <option value="">{<Trans text="All Universities" />}</option>
-                  {universityNames.map((u) => (
-                    <option key={u} value={u}>
-                      {<Trans text={u} />}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label>{<Trans text="Status" />}</label>
-                <select value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}>
-                  <option value="">{<Trans text="All Statuses" />}</option>
-                  <option value="Pending Review">{<Trans text="Pending Review" />}</option>
-                  <option value="Accepted">{<Trans text="Accepted" />}</option>
-                  <option value="Rejected">{<Trans text="Rejected" />}</option>
-                </select>
-              </div>
-              <div className="field">
-                <label>{<Trans text="Technology" />}</label>
-                <input
-                  type="text"
-                  placeholder={lang === 'hi' ? 'उदा. IoT Sensors' : 'e.g. IoT Sensors'}
-                  value={filters.technology}
-                  onChange={(e) => setFilters((f) => ({ ...f, technology: e.target.value }))}
-                />
-              </div>
-              <div className="field">
-                <label>{<Trans text="Project" />}</label>
-                <input
-                  type="text"
-                  placeholder={lang === 'hi' ? 'प्रोजेक्ट का नाम खोजें' : 'Search project name'}
-                  value={filters.project}
-                  onChange={(e) => setFilters((f) => ({ ...f, project: e.target.value }))}
-                />
-              </div>
+      {!loadingInvitations && liveInvitations.length === 0 && (
+        <div className="card empty-state" style={{ padding: '40px 20px', textAlign: 'center' }}>
+          <span className="empty-state__icon" style={{ fontSize: 48 }}>🤝</span>
+          <h3 style={{ marginTop: 12 }}><Trans text="No Collaboration Proposals" /></h3>
+          <p style={{ color: 'var(--text-muted)' }}>
+            <Trans text="No active collaboration proposals currently routed to your organization." />
+          </p>
+        </div>
+      )}
+
+      {/* REJECT MODAL */}
+      {rejectModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div className="card" style={{ maxWidth: 500, width: '90%', padding: 24 }}>
+            <h3 style={{ marginTop: 0 }}>
+              <Trans text="Reject Collaboration Proposal" />
+            </h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+              {lang === 'hi'
+                ? 'कृपया इस सहयोग प्रस्ताव को अस्वीकार करने का कारण दर्ज करें (अनिवार्य):'
+                : 'Please specify the reason for rejecting this collaboration proposal (mandatory):'}
+            </p>
+
+            <textarea
+              rows={4}
+              value={rejectReason}
+              onChange={(e) => {
+                setRejectReason(e.target.value);
+                setRejectError('');
+              }}
+              placeholder={
+                lang === 'hi'
+                  ? 'उदा. संसाधनों की अनुपलब्धता, रणनीतिक प्राथमिकताओं में भिन्नता...'
+                  : 'e.g. Current resource constraints, out of corporate focus area...'
+              }
+              style={{
+                width: '100%',
+                padding: 10,
+                borderRadius: 4,
+                border: '1px solid #d1d5db',
+                fontFamily: 'inherit',
+                fontSize: '0.95rem',
+                marginTop: 8,
+              }}
+            />
+
+            {rejectError && (
+              <p style={{ color: '#dc2626', fontSize: '0.85rem', marginTop: 4 }}>
+                {rejectError}
+              </p>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => setRejectModalOpen(false)}
+              >
+                <Trans text="Cancel" />
+              </button>
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={handleConfirmReject}
+                disabled={submitting[rejectTarget?.challenge_id]}
+              >
+                {submitting[rejectTarget?.challenge_id] ? (
+                  <Trans text="Submitting..." />
+                ) : (
+                  <Trans text="Confirm Rejection" />
+                )}
+              </button>
             </div>
           </div>
-
-          {filteredLegacy.map((p) => (
-            <div className="card" key={p.id}>
-              <div className="gov-card__head">
-                <span className="badge badge-violet">{<Trans text={p.university} />}</span>
-                <span className={`badge ${statusClass[p.status] || 'badge-blue'}`}>{<Trans text={p.status || ''} />}</span>
-                <span className="badge badge-outline">{<Trans text={p.domain} />}</span>
-              </div>
-              <h3 className="problem-title">{lang === 'hi' ? p.projectNameHi || p.projectName : p.projectName}</h3>
-              <p className="problem-desc">{lang === 'hi' ? p.descriptionHi || p.description : p.description}</p>
-
-              <dl className="proposal-card__grid">
-                <dt>{<Trans text="Proposed Collaboration" />}</dt>
-                <dd>{lang === 'hi' ? p.proposedCollaborationHi || p.proposedCollaboration : p.proposedCollaboration}</dd>
-                <dt>{<Trans text="Required Expertise" />}</dt>
-                <dd>{lang === 'hi' ? p.requiredExpertiseHi || p.requiredExpertise : p.requiredExpertise}</dd>
-                <dt>{<Trans text="Required Technologies" />}</dt>
-                <dd>{p.requiredTechnologies.join(', ')}</dd>
-                <dt>{<Trans text="Expected Role of Industry" />}</dt>
-                <dd>{lang === 'hi' ? p.expectedRoleHi || p.expectedRole : p.expectedRole}</dd>
-                <dt>{<Trans text="Submitted On" />}</dt>
-                <dd>{new Date(p.dateTime).toLocaleString(lang === 'hi' ? 'hi-IN' : 'en-IN')}</dd>
-              </dl>
-
-              {p.status === 'Pending Review' && (
-                <div className="proposal-card__actions">
-                  <button className="btn btn-success btn-sm" onClick={() => decideLegacy(p.id, 'Accepted')}>
-                    {<Trans text="Accept" />}
-                  </button>
-                  <button className="btn btn-light btn-sm" onClick={() => decideLegacy(p.id, 'Rejected')}>
-                    {<Trans text="Reject" />}
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-
-          {filteredLegacy.length === 0 && (
-            <div className="card empty-state">
-              <span className="empty-state__icon">🤝</span>
-              {<Trans text="No proposals match these filters." />}
-            </div>
-          )}
         </div>
       )}
     </div>

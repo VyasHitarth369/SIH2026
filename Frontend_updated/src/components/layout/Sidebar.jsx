@@ -26,7 +26,7 @@ export default function Sidebar() {
           ))}
         </nav>
       </div>
-      <div className="sidebar__footer">{<Trans text="SamadhanSetu v2.0 · Jharkhand" />}</div>
+      <div className="sidebar__footer">{<Trans text="VidySetu v2.0 · Jharkhand" />}</div>
     </aside>
   );
 }

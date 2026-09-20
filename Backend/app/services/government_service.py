@@ -5,11 +5,13 @@ Directly queries the 18 public Supabase tables to generate transparent,
 unfabricated system-wide metrics and hydrated monitoring rosters.
 """
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from app.database import get_supabase
 from app.services.auth_service import AuthenticatedUser
+from app.services.matching_service import MatchingService
 
 
 class GovernmentService:
@@ -289,6 +291,9 @@ class GovernmentService:
                 "project_id": proj_data.get("project_id"),
                 "project_title": proj_data.get("project_title"),
                 "project_status": proj_data.get("status"),
+                "government_rejection_reason": ch.get("government_rejection_reason"),
+                "government_reviewed_at": ch.get("government_reviewed_at"),
+                "government_reviewed_by": ch.get("government_reviewed_by"),
             }
 
             # Hydrate institutional names if project exists
@@ -314,6 +319,29 @@ class GovernmentService:
                         item["milestone_progress_pct"] = round(sum(pcts) / len(pcts), 1)
                 except Exception:
                     pass
+
+            # University rejections feedback if any
+            uni_rejections = []
+            try:
+                rej_res = (
+                    self.client.table("challenge_university_matches")
+                    .select("university_id, rejection_reason, responded_at")
+                    .eq("challenge_id", cid)
+                    .eq("status", "rejected")
+                    .execute()
+                )
+                if rej_res and rej_res.data:
+                    for r in rej_res.data:
+                        u_rec = self._get_record_silent("universities", "university_id", r.get("university_id"))
+                        uni_rejections.append({
+                            "university_id": r.get("university_id"),
+                            "university_name": (u_rec or {}).get("university_name") or r.get("university_id"),
+                            "rejection_reason": r.get("rejection_reason"),
+                            "responded_at": r.get("responded_at"),
+                        })
+            except Exception:
+                pass
+            item["university_rejections"] = uni_rejections
 
             hydrated.append(item)
 
@@ -480,6 +508,79 @@ class GovernmentService:
         return solved_list
 
     # -------------------------------------------------------------------------
+    # 6. System-Wide Authoritative MOU Records
+    # -------------------------------------------------------------------------
+    def get_government_mous(self) -> List[Dict[str, Any]]:
+        """Lists factual MOU collaboration records across universities and industries.
+        Strictly avoids fabricating fake PDFs or dummy records. Follows existing MOU
+        determination logic from project workflows.
+        """
+        try:
+            p_res = (
+                self.client.table("projects")
+                .select("*")
+                .order("created_at", desc=True)
+                .execute()
+            )
+            projects = p_res.data or []
+        except Exception:
+            projects = []
+
+        mous = []
+        for p in projects:
+            uni_id = p.get("university_id")
+            ind_id = p.get("industry_id")
+            if not ind_id:
+                cid = p.get("challenge_id")
+                if cid:
+                    try:
+                        cim = (
+                            self.client.table("challenge_industry_matches")
+                            .select("*")
+                            .eq("challenge_id", cid)
+                            .eq("status", "accepted")
+                            .execute()
+                        )
+                        if cim.data and len(cim.data) > 0:
+                            ind_id = cim.data[0].get("industry_id")
+                    except Exception:
+                        pass
+
+            if not uni_id or not ind_id:
+                continue
+
+            uni = self._get_record_silent("universities", "university_id", uni_id)
+            uni_name = (uni or {}).get("university_name") or "Partner University"
+
+            ind = self._get_record_silent("industries", "industry_id", ind_id)
+            ind_name = (ind or {}).get("industry_name") or "Industry Partner"
+
+            ch_doc = None
+            cid = p.get("challenge_id")
+            if cid:
+                ch = self._get_record_silent("challenges", "challenge_id", cid)
+                if ch:
+                    ch_doc = ch.get("document")
+
+            pid = p.get("project_id")
+            mous.append({
+                "mou_id": f"MOU-GOV-{uni_id}-{ind_id}-{pid}",
+                "project_id": pid,
+                "project_title": p.get("project_title") or "Collaborative Innovation Project",
+                "university_id": uni_id,
+                "university_name": uni_name,
+                "industry_id": ind_id,
+                "industry_name": ind_name,
+                "government_partner": "Government of Jharkhand — Department of Higher & Technical Education",
+                "status": "Active Collaboration" if p.get("status") in ["active", "prototype", "pilot", "deployed", "solved", "completed"] else "Initiated",
+                "effective_date": p.get("start_date") or (p.get("created_at") or "")[:10] or "In Effect",
+                "document_url": ch_doc,
+                "has_document": bool(ch_doc),
+            })
+
+        return mous
+
+    # -------------------------------------------------------------------------
     # Helper
     # -------------------------------------------------------------------------
     def _get_record_silent(self, table_name: str, key_field: str, key_val: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -490,3 +591,112 @@ class GovernmentService:
             return res.data[0] if (res and res.data) else None
         except Exception:
             return None
+
+    # -------------------------------------------------------------------------
+    # 7. Problem Approval & Rejection Gates
+    # -------------------------------------------------------------------------
+    def approve_challenge(self, challenge_id: str, user: AuthenticatedUser) -> Dict[str, Any]:
+        """Approves a problem statement and initiates Top-5 University Matching.
+        Advances status to 'routed' and generates recommended university matches.
+        """
+        if user.role != "government":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only government authorities can approve challenges.",
+            )
+
+        ch_res = self.client.table("challenges").select("*").eq("challenge_id", challenge_id).execute()
+        if not ch_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Challenge '{challenge_id}' not found.",
+            )
+        challenge = ch_res.data[0]
+
+        current_status = challenge.get("status")
+        if current_status not in ["submitted", "validated", "under_review"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot approve challenge with status '{current_status}'. Only pending or validated challenges can be approved.",
+            )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        update_payload = {
+            "status": "routed",
+            "government_reviewed_by": str(user.user_id),
+            "government_reviewed_at": now_iso,
+            "government_rejection_reason": None,
+        }
+        self.client.table("challenges").update(update_payload).eq("challenge_id", challenge_id).execute()
+
+        # Deterministically trigger Top-5 University Matching
+        matches = []
+        try:
+            matching_service = MatchingService(self.client)
+            matches = matching_service.get_or_generate_university_matches(challenge_id, user, limit=5)
+        except Exception:
+            matches = []
+
+        return {
+            "success": True,
+            "challenge_id": challenge_id,
+            "status": "routed",
+            "message": "Challenge approved by Government and routed to top matching universities.",
+            "government_reviewed_at": now_iso,
+            "government_reviewed_by": str(user.user_id),
+            "government_rejection_reason": None,
+            "university_matches": matches,
+        }
+
+    def reject_challenge(self, challenge_id: str, reason: str, user: AuthenticatedUser) -> Dict[str, Any]:
+        """Declines a problem statement with a mandatory rejection reason.
+        Advances status to 'rejected' without routing to universities.
+        """
+        if user.role != "government":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only government authorities can reject challenges.",
+            )
+
+        clean_reason = (reason or "").strip()
+        if not clean_reason:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Rejection reason is mandatory and cannot be empty.",
+            )
+
+        ch_res = self.client.table("challenges").select("*").eq("challenge_id", challenge_id).execute()
+        if not ch_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Challenge '{challenge_id}' not found.",
+            )
+        challenge = ch_res.data[0]
+
+        current_status = challenge.get("status")
+        if current_status in ["project_created", "in_project", "solved", "completed"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot reject challenge that has already reached '{current_status}'.",
+            )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        update_payload = {
+            "status": "rejected",
+            "government_rejection_reason": clean_reason,
+            "government_reviewed_by": str(user.user_id),
+            "government_reviewed_at": now_iso,
+        }
+        self.client.table("challenges").update(update_payload).eq("challenge_id", challenge_id).execute()
+
+        return {
+            "success": True,
+            "challenge_id": challenge_id,
+            "status": "rejected",
+            "message": "Challenge has been rejected by Government.",
+            "government_rejection_reason": clean_reason,
+            "government_reviewed_at": now_iso,
+            "government_reviewed_by": str(user.user_id),
+            "university_matches": None,
+        }
+

@@ -22,9 +22,9 @@ export default function LeaderboardPage() {
   }, [activeDomain]);
 
   const mailHref = (student) => {
-    const subject = encodeURIComponent(`Opportunity for ${student.name} — via SamadhanSetu Leaderboard`);
+    const subject = encodeURIComponent(`Opportunity for ${student.name} — via VidySetu Leaderboard`);
     const body = encodeURIComponent(
-      `Hi ${student.name},\n\nWe came across your work on "${student.problemTitle.en}" on the SamadhanSetu leaderboard and would like to discuss an opportunity with you.\n\nRegards,`
+      `Hi ${student.name},\n\nWe came across your work on "${student.problemTitle.en}" on the VidySetu leaderboard and would like to discuss an opportunity with you.\n\nRegards,`
     );
     return `mailto:${student.email}?subject=${subject}&body=${body}`;
   };

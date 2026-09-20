@@ -80,7 +80,7 @@ export default function CertificatePage() {
             completion_date: p.submissionDate || '2026-09-18',
             verification_code: `SS-${String(p.id).padStart(6, '0')}-${studentId}`.toUpperCase(),
             issuer: 'Government of Jharkhand — Department of Higher & Technical Education',
-            platform: 'Samadhan Setu / Concordia Innovation Platform',
+            platform: 'VidySetu Innovation Platform',
           }
         : null,
     };
@@ -240,7 +240,7 @@ export default function CertificatePage() {
                     </div>
 
                     <div style={{ margin: '14px 0 4px', fontSize: 14, letterSpacing: '0.15em', fontWeight: 600, color: '#B45309', textTransform: 'uppercase' }}>
-                      CONCORDIA / SAMADHAN SETU INNOVATION PLATFORM
+                      VIDYSETU INNOVATION PLATFORM
                     </div>
 
                     <h1
@@ -307,7 +307,7 @@ export default function CertificatePage() {
                       </div>
                       <div>
                         <div style={{ fontWeight: 700, color: '#0F172A', fontSize: 13 }}>State Innovation Council</div>
-                        <div style={{ fontSize: 11, color: '#64748B' }}>Samadhan Setu Authority</div>
+                        <div style={{ fontSize: 11, color: '#64748B' }}>VidySetu Authority</div>
                       </div>
                     </div>
 

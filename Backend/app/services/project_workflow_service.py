@@ -210,8 +210,11 @@ class ProjectWorkflowService:
     def express_student_interest(
         self,
         project_id: str,
-        role: Optional[str],
-        user: AuthenticatedUser,
+        role: Optional[str] = "applicant",
+        user: AuthenticatedUser = None,
+        proposed_solution: Optional[str] = None,
+        attachment_url: Optional[str] = None,
+        attachment_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Allows an enrolled student to express interest in an active/eligible project at their university."""
         if user.role != "student":
@@ -221,14 +224,17 @@ class ProjectWorkflowService:
             )
 
         project = self._get_project_or_404(project_id)
-        student_id = (user.stakeholder or {}).get("student_id")
+        student = self._resolve_student_record(user)
+        student_id = (student or {}).get("student_id") or (user.stakeholder or {}).get("student_id")
         if not student_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access forbidden: User is not linked to a student record.",
             )
 
-        student = self._get_student_or_404(student_id)
+        if not student:
+            student = self._get_student_or_404(student_id)
+
         if student.get("university_id") != project.get("university_id"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -239,12 +245,14 @@ class ProjectWorkflowService:
                 ),
             )
 
+        canonical_project_id = project.get("project_id") or project_id
+
         # Prevent duplicate interest
         try:
             res = (
                 self.client.table("project_members")
                 .select("*")
-                .eq("project_id", project_id)
+                .eq("project_id", canonical_project_id)
                 .eq("student_id", student_id)
                 .execute()
             )
@@ -253,7 +261,7 @@ class ProjectWorkflowService:
                 if mem.get("status") in ["active", "pending"]:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Student '{student_id}' has already applied or joined project '{project_id}'.",
+                        detail=f"Student '{student_id}' has already applied or joined project '{canonical_project_id}'.",
                     )
         except HTTPException:
             raise
@@ -261,11 +269,14 @@ class ProjectWorkflowService:
             pass
 
         record = {
-            "project_id": project_id,
+            "project_id": canonical_project_id,
             "student_id": student_id,
             "role": role or "applicant",
             "status": "pending",
             "joined_at": datetime.now(timezone.utc).isoformat(),
+            "proposed_solution": proposed_solution,
+            "attachment_url": attachment_url,
+            "attachment_name": attachment_name,
         }
 
         try:
@@ -275,11 +286,14 @@ class ProjectWorkflowService:
             saved = record
 
         return {
-            "project_id": project_id,
+            "project_id": canonical_project_id,
             "student_id": student_id,
             "student_name": student.get("student_name"),
             "role": saved.get("role", "applicant"),
             "status": saved.get("status", "pending"),
+            "proposed_solution": saved.get("proposed_solution", proposed_solution),
+            "attachment_url": saved.get("attachment_url", attachment_url),
+            "attachment_name": saved.get("attachment_name", attachment_name),
             "message": "Student interest expressed successfully. Awaiting faculty review.",
         }
 
@@ -841,6 +855,32 @@ class ProjectWorkflowService:
                 if user_uni_id:
                     query = query.eq("university_id", user_uni_id)
 
+        elif user and user.role == "industry_employee":
+            emp_rec = user.stakeholder or {}
+            emp_id = emp_rec.get("employee_id")
+            emp_ind = emp_rec.get("industry_id")
+
+            if my_projects:
+                if not emp_id:
+                    return []
+                try:
+                    pei_res = (
+                        self.client.table("project_employee_interests")
+                        .select("project_id")
+                        .eq("employee_id", emp_id)
+                        .eq("status", "selected")
+                        .execute()
+                    )
+                    mentor_pids = [m["project_id"] for m in (pei_res.data or []) if m.get("project_id")]
+                except Exception:
+                    mentor_pids = []
+                if not mentor_pids:
+                    return []
+                query = query.in_("project_id", mentor_pids)
+            else:
+                if emp_ind:
+                    query = query.eq("industry_id", emp_ind)
+
         else:
             if university_id:
                 query = query.eq("university_id", university_id)
@@ -890,7 +930,9 @@ class ProjectWorkflowService:
             pending_applicants = []
             is_member = False
             try:
-                pm_res = self.client.table("project_members").select("student_id, status, role").eq("project_id", pid).execute()
+                pm_res = self.client.table("project_members").select(
+                    "student_id, status, role, proposed_solution, attachment_url, attachment_name"
+                ).eq("project_id", pid).execute()
                 for pm in (pm_res.data or []):
                     sid = pm.get("student_id")
                     st = pm.get("status", "active")
@@ -909,6 +951,9 @@ class ProjectWorkflowService:
                             "email": s_email,
                             "status": st,
                             "role": pm.get("role", "member"),
+                            "proposed_solution": pm.get("proposed_solution"),
+                            "attachment_url": pm.get("attachment_url"),
+                            "attachment_name": pm.get("attachment_name"),
                         })
                     elif st == "pending" or pm.get("role") == "applicant":
                         pending_applicants.append({
@@ -917,6 +962,9 @@ class ProjectWorkflowService:
                             "email": s_email,
                             "role": pm.get("role", "applicant"),
                             "status": "pending",
+                            "proposed_solution": pm.get("proposed_solution"),
+                            "attachment_url": pm.get("attachment_url"),
+                            "attachment_name": pm.get("attachment_name"),
                         })
             except Exception:
                 pass
@@ -927,23 +975,25 @@ class ProjectWorkflowService:
             except Exception:
                 curr_milestone = "Solution Deployed" if item.get("status") in ("deployed", "solved", "completed") else "Faculty Assigned"
 
-            # Industry employee and mentor hydration (Part 12, 13 & Clarification 4)
+            # Industry employee and mentor hydration (Strictly status == 'selected' only)
             ind_emp_name = None
             ind_emp_desig = None
+            ind_emp_id = None
             try:
-                pei_res = self.client.table("project_employee_interests").select("employee_id, status").eq("project_id", pid).execute()
-                interests = pei_res.data or []
-                selected_emp = next((i for i in interests if i.get("status") == "selected"), None) or (interests[0] if interests else None)
-                if selected_emp:
-                    emp_rec = self._get_record_silent("industry_employees", "employee_id", selected_emp.get("employee_id"))
+                pei_res = (
+                    self.client.table("project_employee_interests")
+                    .select("employee_id, status")
+                    .eq("project_id", pid)
+                    .eq("status", "selected")
+                    .execute()
+                )
+                if pei_res.data and len(pei_res.data) > 0:
+                    selected_emp = pei_res.data[0]
+                    ind_emp_id = selected_emp.get("employee_id")
+                    emp_rec = self._get_record_silent("industry_employees", "employee_id", ind_emp_id)
                     if emp_rec:
                         ind_emp_name = emp_rec.get("employee_name")
                         ind_emp_desig = emp_rec.get("designation")
-                if not ind_emp_name and item.get("industry_id"):
-                    ie_res = self.client.table("industry_employees").select("employee_name, designation").eq("industry_id", item.get("industry_id")).limit(1).execute()
-                    if ie_res.data:
-                        ind_emp_name = ie_res.data[0].get("employee_name")
-                        ind_emp_desig = ie_res.data[0].get("designation")
             except Exception:
                 pass
 
@@ -987,6 +1037,8 @@ class ProjectWorkflowService:
             item["industry_employee_name"] = ind_emp_name
             item["industry_employee_designation"] = ind_emp_desig
             item["industry_mentor_name"] = ind_emp_name
+            item["industry_mentor_id"] = ind_emp_id
+            item["industry_mentor_designation"] = ind_emp_desig
             item["student_participants"] = stu_names
             item["student_names"] = stu_names
             item["students"] = active_students
@@ -1144,6 +1196,9 @@ class ProjectWorkflowService:
     def _get_project_or_404(self, project_id: str) -> Dict[str, Any]:
         try:
             res = self.client.table("projects").select("*").eq("project_id", project_id).execute()
+            if not res.data:
+                # Fallback: check if caller passed challenge_id
+                res = self.client.table("projects").select("*").eq("challenge_id", project_id).execute()
             if not res.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,

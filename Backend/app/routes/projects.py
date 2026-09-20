@@ -386,11 +386,17 @@ def express_student_interest(
 ):
     """Enrolled university students express interest in eligible projects."""
     try:
-        role = interest_in.role if interest_in else "applicant"
+        role = interest_in.role if (interest_in and interest_in.role) else "applicant"
+        proposed_solution = interest_in.proposed_solution if interest_in else None
+        attachment_url = interest_in.attachment_url if interest_in else None
+        attachment_name = interest_in.attachment_name if interest_in else None
         res = service.express_student_interest(
             project_id=project_id,
             role=role,
             user=current_user,
+            proposed_solution=proposed_solution,
+            attachment_url=attachment_url,
+            attachment_name=attachment_name,
         )
         return {
             "success": True,
@@ -529,6 +535,36 @@ def list_my_university_mous(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch university MOUs: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 6g. GET /api/projects/industry/mous — Authoritative Industry MOU Records
+# -----------------------------------------------------------------------------
+@router.get(
+    "/industry/mous",
+    summary="List MOU collaboration records for the authenticated Industry Manager's company",
+)
+def list_my_industry_mous(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: IndustryWorkflowService = Depends(get_industry_workflow_service),
+):
+    """Returns MOU collaboration records for the authenticated Industry Manager.
+    Strictly SPOC only (normal employee receives 403).
+    """
+    try:
+        data = service.list_industry_mous(current_user)
+        return {
+            "success": True,
+            "total": len(data),
+            "data": data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch industry MOUs: {str(e)}",
         )
 
 

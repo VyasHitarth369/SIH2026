@@ -1,6 +1,6 @@
 export const translations = {
   hi: {
-    brand: 'Samadhan',
+    brand: 'Vidy',
     brandSuffix: 'Setu',
     heroTitle: 'नागरिक समस्याओं का त्वरित AI समाधान Portal',
     heroSub: 'नागरिक, सरकार, विश्वविद्यालय एवं उद्योगपतियों को एक ही मंच पर जोड़कर झारखंड की वास्तविक चुनौतियों को हल करने का राष्ट्रीय प्लेटफ़ॉर्म।',
@@ -187,7 +187,7 @@ export const translations = {
     citProblem: '👨‍🌾 नागरिक समस्या',
   },
   en: {
-    brand: 'Samadhan',
+    brand: 'Vidy',
     brandSuffix: 'Setu',
     heroTitle: 'AI-Powered Civic Problem Resolution Portal',
     heroSub: 'A unified national platform connecting Citizens, Government, Universities, and Industry to solve real-world challenges in Jharkhand.',

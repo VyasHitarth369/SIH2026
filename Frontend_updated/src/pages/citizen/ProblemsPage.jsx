@@ -44,7 +44,9 @@ export default function ProblemsPage() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return myProblems.filter((p) => {
-      if (statusFilter === 'unsolved' && p.type !== 'unsolved') return false;
+      const isRej = p.status === 'rejected' || p.rawSupabase?.status === 'rejected';
+      if (statusFilter === 'rejected') return isRej;
+      if (statusFilter === 'unsolved' && (p.type !== 'unsolved' || isRej)) return false;
       if (statusFilter === 'solved' && p.type !== 'solved') return false;
       if (statusFilter === 'high' && p.priorityLevel !== 'high') return false;
       if (statusFilter === 'active' && !(p.type === 'unsolved' && p.allocation?.allocatedTo && p.faculty)) return false;
@@ -91,6 +93,7 @@ export default function ProblemsPage() {
           <div className={`filter-tab${statusFilter === 'unsolved' ? ' active' : ''}`} onClick={() => setStatusFilter('unsolved')}>{t.filterStatusUnsolved}</div>
           <div className={`filter-tab${statusFilter === 'active' ? ' active' : ''}`} onClick={() => setStatusFilter('active')}>{<Trans text="Active Projects" />}</div>
           <div className={`filter-tab${statusFilter === 'solved' ? ' active' : ''}`} onClick={() => setStatusFilter('solved')}>{t.filterStatusSolved}</div>
+          <div className={`filter-tab${statusFilter === 'rejected' ? ' active' : ''}`} onClick={() => setStatusFilter('rejected')}>{<Trans text="Rejected" />}</div>
           <div className={`filter-tab${statusFilter === 'high' ? ' active' : ''}`} onClick={() => setStatusFilter('high')}>{t.filterHighPriority}</div>
         </div>
       </div>
@@ -99,14 +102,15 @@ export default function ProblemsPage() {
         {filtered.map((p) => {
           const voted = hasVoted(p.id);
           const isSolved = p.type === 'solved' || p.status === 'solved' || p.status === 'accepted_existing_solution';
-          const isActiveProject = !isSolved && (
+          const isRejected = p.status === 'rejected' || p.rawSupabase?.status === 'rejected';
+          const isActiveProject = !isSolved && !isRejected && (
             (p.type === 'unsolved' && p.allocation?.allocatedTo) ||
             p.status === 'university_selected' ||
             p.status === 'active' ||
             p.rawSupabase?.status === 'university_selected' ||
             p.rawSupabase?.status === 'active'
           );
-          const isUnsolved = !isSolved && !isActiveProject;
+          const isUnsolved = !isSolved && !isActiveProject && !isRejected;
 
           const uniName = p.allocation?.allocatedTo || p.university || p.university_name || (isActiveProject ? 'Pending Allocation' : null);
           const indName = (p.suggestedIndustries && p.suggestedIndustries.length > 0)
@@ -116,9 +120,11 @@ export default function ProblemsPage() {
           return (
             <div className="card" key={p.id}>
               <div className="problem-card__head">
-                <span className={`badge ${isSolved ? 'badge-teal' : isActiveProject ? 'badge-teal' : 'badge-amber'}`}>
+                <span className={`badge ${isSolved ? 'badge-teal' : isRejected ? 'badge-coral' : isActiveProject ? 'badge-teal' : 'badge-amber'}`}>
                   {isSolved
                     ? `✅ ${(t.solved || 'SOLVED').toUpperCase()}`
+                    : isRejected
+                    ? `❌ ${lang === 'hi' ? 'अस्वीकृत' : 'REJECTED'}`
                     : isActiveProject
                     ? `🎓 ${lang === 'hi' ? 'सक्रिय परियोजना' : 'ACTIVE PROJECT'}`
                     : (t.unsolved || 'UNSOLVED').toUpperCase()}
@@ -130,7 +136,7 @@ export default function ProblemsPage() {
                 ) : (
                   <span className="badge badge-gray">{t.citProblem || '👨‍🌾 Citizen Problem'}</span>
                 )}
-                {!isSolved && (
+                {!isSolved && !isRejected && (
                   <span className={`badge ${priorityBadgeClass[p.priorityLevel] || 'badge-blue'} badge-priority`}>
                     🤖 {t.aiPriority}: <Trans text={p.aiPriority || ''} />
                   </span>
@@ -143,6 +149,42 @@ export default function ProblemsPage() {
                 <span>📍 <strong>{t.location}:</strong> {p.loc}</span>
                 <span>🎯 <strong>{t.scope}:</strong> <Trans text={p.scope || ''} /></span>
               </div>
+
+              {/* Government Rejection Reason */}
+              {isRejected && (
+                <div style={{ marginTop: 12, padding: '12px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8 }}>
+                  <h4 style={{ margin: '0 0 8px 0', color: '#991b1b', fontSize: 14 }}>
+                    🚫 <Trans text="Government Decision: Declined" />
+                  </h4>
+                  <div style={{ fontSize: 13, color: '#7f1d1d' }}>
+                    <strong><Trans text="Reason:" /></strong> {p.government_rejection_reason || p.rawSupabase?.government_rejection_reason || <Trans text="Declined by government authority." />}
+                  </div>
+                  {(p.government_reviewed_at || p.rawSupabase?.government_reviewed_at) && (
+                    <div style={{ fontSize: 11, color: '#991b1b', marginTop: 4 }}>
+                      {new Date(p.government_reviewed_at || p.rawSupabase?.government_reviewed_at).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* University Rejection Feedback (Amendment 4) */}
+              {p.university_rejections && p.university_rejections.length > 0 && (
+                <div style={{ marginTop: 12, padding: '12px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8 }}>
+                  <h4 style={{ margin: '0 0 8px 0', color: '#991b1b', fontSize: 14 }}>
+                    ⚠️ <Trans text="University Review Feedback" />
+                  </h4>
+                  {p.university_rejections.map((rej, idx) => (
+                    <div key={idx} style={{ fontSize: 13, color: '#7f1d1d', marginBottom: 4 }}>
+                      <strong>{rej.university_name || rej.university_id}:</strong> {rej.rejection_reason}
+                      {rej.rejected_at && (
+                        <span style={{ fontSize: 11, color: '#991b1b', marginLeft: 6 }}>
+                          ({new Date(rej.rejected_at).toLocaleDateString()})
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* Working/Active: University Name and Industry Name (No private faculty/student details) */}
               {isActiveProject && (

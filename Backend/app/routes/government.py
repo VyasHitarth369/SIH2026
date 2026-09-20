@@ -11,8 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.dependencies.auth import require_government_officer
 from app.schemas.government import (
     GovernmentDashboardMetrics,
+    GovernmentDecisionResponse,
     GovernmentFacultyItem,
     GovernmentProblemItem,
+    GovernmentRejectRequest,
     GovernmentSolvedProjectItem,
     GovernmentStudentItem,
 )
@@ -176,3 +178,90 @@ def get_solved_projects(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve solved projects: {str(e)}",
         )
+
+
+# -----------------------------------------------------------------------------
+# 6. GET /api/government/mous — System-Wide Authoritative MOU Records
+# -----------------------------------------------------------------------------
+@router.get(
+    "/mous",
+    summary="List factual MOU collaboration records across universities and industries",
+)
+def get_government_mous(
+    current_user: AuthenticatedUser = Depends(require_government_officer()),
+    service: GovernmentService = Depends(get_government_service),
+):
+    """Retrieves factual tri-party MOU records between universities, industries,
+    and the Government of Jharkhand. Strictly avoids fabricating fake records or PDFs.
+    """
+    try:
+        data = service.get_government_mous()
+        return {
+            "success": True,
+            "total": len(data),
+            "data": data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve government MOUs: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 7. POST /api/government/problems/{challenge_id}/approve — Approve Problem Statement
+# -----------------------------------------------------------------------------
+@router.post(
+    "/problems/{challenge_id}/approve",
+    response_model=GovernmentDecisionResponse,
+    summary="Approve a problem statement and trigger Top-5 university matching",
+)
+def approve_challenge(
+    challenge_id: str,
+    current_user: AuthenticatedUser = Depends(require_government_officer()),
+    service: GovernmentService = Depends(get_government_service),
+):
+    """Approves a citizen/stakeholder problem statement. Advances status to 'routed'
+    and triggers deterministic Top-5 university matching in 'recommended' state.
+    """
+    try:
+        return service.approve_challenge(challenge_id, current_user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to approve challenge: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 8. POST /api/government/problems/{challenge_id}/reject — Reject Problem Statement
+# -----------------------------------------------------------------------------
+@router.post(
+    "/problems/{challenge_id}/reject",
+    response_model=GovernmentDecisionResponse,
+    summary="Reject a problem statement with a mandatory reason",
+)
+def reject_challenge(
+    challenge_id: str,
+    body: GovernmentRejectRequest,
+    current_user: AuthenticatedUser = Depends(require_government_officer()),
+    service: GovernmentService = Depends(get_government_service),
+):
+    """Declines a problem statement with a mandatory rejection reason.
+    Advances status to 'rejected' and prevents university matching.
+    """
+    try:
+        return service.reject_challenge(challenge_id, body.reason, current_user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reject challenge: {str(e)}",
+        )
+
+

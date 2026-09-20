@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../context/LanguageContext';
 import Trans, { useTranslate } from '../components/shared/Trans.jsx';
+import { VidySetuMark } from '../components/shared/VidySetuLogo.jsx';
 import '../styles/home.css';
 
 export default function HomePage() {
@@ -49,10 +50,10 @@ export default function HomePage() {
             className="brand"
             onClick={(e) => scrollToSection(e, 'home')}
           >
-            <div className="brand-symbol">⚡</div>
+            <VidySetuMark size={38} />
             <div>
               <div className="brand-name">
-                Samadhan<span>Setu</span>
+                <span style={{ color: '#0E387A' }}>Vidy</span><span style={{ color: '#059669' }}>Setu</span>
               </div>
               <div className="brand-subtitle">
                 <Trans text="Civic Problem Resolution Platform" />
@@ -114,7 +115,7 @@ export default function HomePage() {
             </h1>
 
             <p className="hero-description">
-              <Trans text="SamadhanSetu connects citizens, government, universities, students and industry to identify real civic problems and turn them into measurable solutions." />
+              <Trans text="VidySetu connects citizens, government, universities, students and industry to identify real civic problems and turn them into measurable solutions." />
             </p>
 
             <div className="hero-actions">
@@ -263,7 +264,7 @@ export default function HomePage() {
             <div className="section-label"><Trans text="Simple Process" /></div>
             <h2 className="section-title"><Trans text="From Problem to Impact" /></h2>
             <p className="section-description">
-              <Trans text="SamadhanSetu creates a structured pathway from citizen-reported problems to innovative solutions." />
+              <Trans text="VidySetu creates a structured pathway from citizen-reported problems to innovative solutions." />
             </p>
           </div>
 
@@ -372,8 +373,11 @@ export default function HomePage() {
         <div className="landing-container">
           <div className="footer-grid">
             <div>
-              <div className="footer-brand">
-                ⚡ Samadhan<span>Setu</span>
+              <div className="footer-brand" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <VidySetuMark size={28} />
+                <span>
+                  <span style={{ color: '#0E387A' }}>Vidy</span><span style={{ color: '#059669' }}>Setu</span>
+                </span>
               </div>
               <p className="footer-description">
                 <Trans text="A civic problem resolution platform connecting communities, institutions and innovators to create meaningful local impact." />
@@ -422,7 +426,7 @@ export default function HomePage() {
           </div>
 
           <div className="footer-bottom">
-            <span><Trans text="© 2026 SamadhanSetu. Civic Technology Initiative." /></span>
+            <span><Trans text="© 2026 VidySetu. Learn. Solve. Build a Smarter India." /></span>
             <span><Trans text="Designed for citizen-centric problem solving." /></span>
           </div>
         </div>

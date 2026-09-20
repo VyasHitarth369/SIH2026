@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from app.database import get_supabase
 from app.services.ai_service import AIService
 from app.services.auth_service import AuthenticatedUser
+from app.services.project_workflow_service import ProjectWorkflowService
 
 
 class ChallengeService:
@@ -96,7 +97,7 @@ class ChallengeService:
         res = self.client.table("challenges").insert(clean_record).execute()
         return res.data[0] if res.data else clean_record
 
-    def get_challenge(self, challenge_id: str) -> Dict[str, Any]:
+    def get_challenge(self, challenge_id: str, user: Optional[AuthenticatedUser] = None) -> Dict[str, Any]:
         """Retrieves a single challenge and hydrates its associated ai_analysis if available."""
         res = (
             self.client.table("challenges")
@@ -145,19 +146,50 @@ class ChallengeService:
         except Exception:
             challenge["project"] = None
 
-        # Hydrate university rejections (Part 10 & Clarification 3)
+        # Hydrate university rejections with server-side authorization (Amendment 4)
         rejections = []
         try:
             m_res = self.client.table("challenge_university_matches").select("*").eq("challenge_id", challenge_id).eq("status", "rejected").execute()
-            for m in (m_res.data or []):
-                u_res = self.client.table("universities").select("university_name").eq("university_id", m.get("university_id")).execute()
-                u_name = u_res.data[0].get("university_name") if (u_res and u_res.data) else m.get("university_id")
-                rejections.append({
-                    "university_id": m.get("university_id"),
-                    "university_name": u_name,
-                    "rejection_reason": m.get("response_note") or "Problem statement declined by university administration.",
-                    "rejected_at": m.get("responded_at"),
-                })
+            raw_matches = m_res.data or []
+            if raw_matches and user:
+                user_role = getattr(user, "role", None)
+                user_uuid = str(getattr(user, "user_id", ""))
+                sub_by = str(challenge.get("submitted_by") or "").lower()
+                ch_uid = str(challenge.get("user_id") or "")
+                user_email = str(getattr(user, "email", "")).lower()
+
+                is_gov = user_role == "government"
+                is_submitter = bool(
+                    (user_uuid and user_uuid == ch_uid)
+                    or (user_email and user_email == sub_by)
+                )
+                if not is_submitter and user_uuid:
+                    try:
+                        dns_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, user_uuid))
+                        if dns_uuid == ch_uid:
+                            is_submitter = True
+                    except Exception:
+                        pass
+
+                admin_uni = None
+                if user_role == "university_admin":
+                    from app.services.university_workflow_service import UniversityWorkflowService
+                    admin_rec = UniversityWorkflowService(self.client)._resolve_university_admin_record(user)
+                    admin_uni = (admin_rec or {}).get("university_id") or getattr(user, "university_id", None)
+
+                for m in raw_matches:
+                    match_uni = m.get("university_id")
+                    is_rejecting_uni = (user_role == "university_admin" and admin_uni and admin_uni == match_uni)
+
+                    if is_gov or is_submitter or is_rejecting_uni:
+                        u_res = self.client.table("universities").select("university_name").eq("university_id", match_uni).execute()
+                        u_name = u_res.data[0].get("university_name") if (u_res and u_res.data) else match_uni
+                        rejections.append({
+                            "university_id": match_uni,
+                            "university_name": u_name,
+                            "rejection_reason": m.get("response_note") or "Problem statement declined by university administration.",
+                            "rejected_at": m.get("responded_at"),
+                        })
         except Exception:
             pass
         challenge["university_rejections"] = rejections
@@ -215,6 +247,24 @@ class ChallengeService:
         except Exception:
             pass
 
+        # Batch hydrate university rejections for government monitoring (Amendment 4)
+        rejection_map: Dict[str, List[Dict[str, Any]]] = {}
+        if user and getattr(user, "role", None) == "government":
+            try:
+                m_res = self.client.table("challenge_university_matches").select("*").in_("challenge_id", challenge_ids).eq("status", "rejected").execute()
+                for m in (m_res.data or []):
+                    cid = m.get("challenge_id")
+                    u_res = self.client.table("universities").select("university_name").eq("university_id", m.get("university_id")).execute()
+                    u_name = u_res.data[0].get("university_name") if (u_res and u_res.data) else m.get("university_id")
+                    rejection_map.setdefault(cid, []).append({
+                        "university_id": m.get("university_id"),
+                        "university_name": u_name,
+                        "rejection_reason": m.get("response_note") or "Problem statement declined by university administration.",
+                        "rejected_at": m.get("responded_at"),
+                    })
+            except Exception:
+                pass
+
         sanitized: List[Dict[str, Any]] = []
         for c in challenges:
             cid = c.get("challenge_id")
@@ -245,6 +295,7 @@ class ChallengeService:
                 "votes_count": vote_counts.get(cid, 0),
                 "has_voted": cid in voted_challenges,
                 "project": proj_map.get(cid),
+                "university_rejections": rejection_map.get(cid, []),
             }
             # Only include user_id if specifically requested by user_id_filter query
             if user_id_filter:
@@ -287,16 +338,42 @@ class ChallengeService:
         except Exception:
             pass
 
-        # Batch hydrate projects
+        # Batch hydrate projects with authoritative milestone progression
         proj_map: Dict[str, Any] = {}
         try:
             p_res = (
                 self.client.table("projects")
-                .select("project_id, challenge_id, project_title, status, university_id, industry_id")
+                .select("project_id, challenge_id, project_title, status, university_id, faculty_id, industry_id")
                 .in_("challenge_id", challenge_ids)
                 .execute()
             )
+            proj_service = ProjectWorkflowService(client=self.client)
             for p in (p_res.data or []):
+                pid = p.get("project_id")
+                try:
+                    _, curr_m = proj_service.get_project_current_stage(pid)
+                    p["current_milestone"] = curr_m
+                except Exception:
+                    p["current_milestone"] = (
+                        "Solution Deployed"
+                        if p.get("status") in ["deployed", "solved", "completed"]
+                        else "Faculty Assigned"
+                    )
+
+                # Hydrate institutional names
+                if p.get("university_id"):
+                    u = proj_service._get_record_silent("universities", "university_id", p["university_id"])
+                    if u:
+                        p["university_name"] = u.get("university_name")
+                if p.get("faculty_id"):
+                    f = proj_service._get_record_silent("faculty", "faculty_id", p["faculty_id"])
+                    if f:
+                        p["faculty_name"] = f.get("faculty_name")
+                if p.get("industry_id"):
+                    ind = proj_service._get_record_silent("industries", "industry_id", p["industry_id"])
+                    if ind:
+                        p["industry_name"] = ind.get("industry_name")
+
                 proj_map[p["challenge_id"]] = p
         except Exception:
             pass
@@ -330,10 +407,22 @@ class ChallengeService:
 
         for c in challenges:
             cid = c["challenge_id"]
+            proj = proj_map.get(cid)
             c["ai_analysis"] = ai_map.get(cid)
-            c["project"] = proj_map.get(cid)
+            c["project"] = proj
             c["votes_count"] = vote_counts.get(cid, 0)
             c["university_rejections"] = rejection_map.get(cid, [])
+            if proj:
+                c["current_milestone"] = proj.get("current_milestone")
+                c["university_name"] = proj.get("university_name")
+                c["faculty_name"] = proj.get("faculty_name")
+                c["industry_name"] = proj.get("industry_name")
+            else:
+                c["current_milestone"] = (
+                    "Routed to Universities"
+                    if c.get("status") in ["routed", "university_selected"]
+                    else "Problem Submitted"
+                )
 
         return challenges
 
