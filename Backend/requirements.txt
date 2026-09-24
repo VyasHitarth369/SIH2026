@@ -36,3 +36,7 @@ uvicorn==0.52.4
 websockets==15.0.1
 yarl==1.24.5
 google-genai
+reportlab==5.0.1
+python-multipart==0.0.32
+openai==3.19.0
+pillow==12.3.0
