@@ -258,7 +258,9 @@ class ChallengeService:
 
         Sanitizes data for public listing, hydrates vote counts, and identifies if user has voted.
         """
-        query = self.client.table("challenges").select("*")
+        query = self.client.table("challenges").select(
+            "challenge_id, title, description, location, city, district, address, pincode, impact_scope, expected_solution, status, submitted_by, user_id, created_at, government_rejection_reason, government_reviewed_at, government_reviewed_by"
+        )
         if status_filter:
             query = query.eq("status", status_filter)
         if city_filter:
@@ -302,13 +304,19 @@ class ChallengeService:
         if user and getattr(user, "role", None) == "government":
             try:
                 m_res = self.client.table("challenge_university_matches").select("*").in_("challenge_id", challenge_ids).eq("status", "rejected").execute()
-                for m in (m_res.data or []):
+                match_data = m_res.data or []
+                u_ids = list({m.get("university_id") for m in match_data if m.get("university_id")})
+                u_names = {}
+                if u_ids:
+                    u_rows = self.client.table("universities").select("university_id, university_name").in_("university_id", u_ids).execute().data or []
+                    u_names = {u["university_id"]: u.get("university_name") for u in u_rows}
+
+                for m in match_data:
                     cid = m.get("challenge_id")
-                    u_res = self.client.table("universities").select("university_name").eq("university_id", m.get("university_id")).execute()
-                    u_name = u_res.data[0].get("university_name") if (u_res and u_res.data) else m.get("university_id")
+                    uid = m.get("university_id")
                     rejection_map.setdefault(cid, []).append({
-                        "university_id": m.get("university_id"),
-                        "university_name": u_name,
+                        "university_id": uid,
+                        "university_name": u_names.get(uid) or uid,
                         "rejection_reason": m.get("response_note") or "Problem statement declined by university administration.",
                         "rejected_at": m.get("responded_at"),
                     })
@@ -335,9 +343,9 @@ class ChallengeService:
                 "address": c.get("address"),
                 "pincode": c.get("pincode"),
                 "impact_scope": c.get("impact_scope"),
-                "photo": c.get("photo"),
-                "video": c.get("video"),
-                "document": c.get("document"),
+                "photo": None,
+                "video": None,
+                "document": None,
                 "expected_solution": c.get("expected_solution"),
                 "status": c.get("status"),
                 "created_at": c.get("created_at"),
@@ -368,7 +376,9 @@ class ChallengeService:
 
         res = (
             self.client.table("challenges")
-            .select("*")
+            .select(
+                "challenge_id, title, description, location, city, district, address, pincode, impact_scope, expected_solution, status, submitted_by, user_id, created_at, government_rejection_reason, government_reviewed_at, government_reviewed_by"
+            )
             .in_("user_id", valid_uids)
             .order("created_at", desc=True, nullsfirst=False)
             .execute()
@@ -397,8 +407,28 @@ class ChallengeService:
                 .in_("challenge_id", challenge_ids)
                 .execute()
             )
+            projs = p_res.data or []
+            u_ids = list({p["university_id"] for p in projs if p.get("university_id")})
+            f_ids = list({p["faculty_id"] for p in projs if p.get("faculty_id")})
+            i_ids = list({p["industry_id"] for p in projs if p.get("industry_id")})
+
+            u_map = {}
+            if u_ids:
+                u_res = self.client.table("universities").select("university_id, university_name").in_("university_id", u_ids).execute()
+                u_map = {u["university_id"]: u.get("university_name") for u in (u_res.data or [])}
+
+            f_map = {}
+            if f_ids:
+                f_res = self.client.table("faculty").select("faculty_id, faculty_name").in_("faculty_id", f_ids).execute()
+                f_map = {f["faculty_id"]: f.get("faculty_name") for f in (f_res.data or [])}
+
+            i_map = {}
+            if i_ids:
+                i_res = self.client.table("industries").select("industry_id, industry_name").in_("industry_id", i_ids).execute()
+                i_map = {i["industry_id"]: i.get("industry_name") for i in (i_res.data or [])}
+
             proj_service = ProjectWorkflowService(client=self.client)
-            for p in (p_res.data or []):
+            for p in projs:
                 pid = p.get("project_id")
                 try:
                     _, curr_m = proj_service.get_project_current_stage(pid)
@@ -410,20 +440,9 @@ class ChallengeService:
                         else "Faculty Assigned"
                     )
 
-                # Hydrate institutional names
-                if p.get("university_id"):
-                    u = proj_service._get_record_silent("universities", "university_id", p["university_id"])
-                    if u:
-                        p["university_name"] = u.get("university_name")
-                if p.get("faculty_id"):
-                    f = proj_service._get_record_silent("faculty", "faculty_id", p["faculty_id"])
-                    if f:
-                        p["faculty_name"] = f.get("faculty_name")
-                if p.get("industry_id"):
-                    ind = proj_service._get_record_silent("industries", "industry_id", p["industry_id"])
-                    if ind:
-                        p["industry_name"] = ind.get("industry_name")
-
+                p["university_name"] = u_map.get(p.get("university_id"))
+                p["faculty_name"] = f_map.get(p.get("faculty_id"))
+                p["industry_name"] = i_map.get(p.get("industry_id"))
                 proj_map[p["challenge_id"]] = p
         except Exception:
             pass
@@ -442,13 +461,19 @@ class ChallengeService:
         rejection_map: Dict[str, List[Dict[str, Any]]] = {}
         try:
             m_res = self.client.table("challenge_university_matches").select("*").in_("challenge_id", challenge_ids).eq("status", "rejected").execute()
-            for m in (m_res.data or []):
+            rej_data = m_res.data or []
+            rej_uids = list({m.get("university_id") for m in rej_data if m.get("university_id")})
+            rej_unames = {}
+            if rej_uids:
+                ru_res = self.client.table("universities").select("university_id, university_name").in_("university_id", rej_uids).execute()
+                rej_unames = {u["university_id"]: u.get("university_name") for u in (ru_res.data or [])}
+
+            for m in rej_data:
                 cid = m.get("challenge_id")
-                u_res = self.client.table("universities").select("university_name").eq("university_id", m.get("university_id")).execute()
-                u_name = u_res.data[0].get("university_name") if (u_res and u_res.data) else m.get("university_id")
+                uid = m.get("university_id")
                 rejection_map.setdefault(cid, []).append({
-                    "university_id": m.get("university_id"),
-                    "university_name": u_name,
+                    "university_id": uid,
+                    "university_name": rej_unames.get(uid) or uid,
                     "rejection_reason": m.get("response_note") or "Problem statement declined by university administration.",
                     "rejected_at": m.get("responded_at"),
                 })
@@ -458,6 +483,9 @@ class ChallengeService:
         for c in challenges:
             cid = c["challenge_id"]
             proj = proj_map.get(cid)
+            c["photo"] = None
+            c["video"] = None
+            c["document"] = None
             c["ai_analysis"] = ai_map.get(cid)
             c["project"] = proj
             c["votes_count"] = vote_counts.get(cid, 0)
@@ -895,14 +923,18 @@ class ChallengeService:
             new_status = "duplicate_detected"
             action_msg = "A strongly similar challenge already exists in your area. Awaiting citizen confirmation via Duplicate Gate."
         elif validity == "uncertain":
-            new_status = "uncertain_eligibility"
-            action_msg = "Problem statement requires further clarification."
+            if call_1_result.get("provider_used") == "backend":
+                new_status = "validated"
+                action_msg = "Challenge validated under deterministic fallback."
+            else:
+                new_status = "uncertain_eligibility"
+                action_msg = "Problem statement requires further clarification."
         elif img_status == "mismatch":
             new_status = "image_mismatch"
             action_msg = "Uploaded image does not appear to match the problem description. Please upload clearer evidence."
         elif search_status == "search_failed":
-            new_status = "uncertain_solution_search"
-            action_msg = "External solution search failed or offline. Challenge pending verification."
+            new_status = "validated"
+            action_msg = "External search offline; challenge classified and validated."
         elif search_status == "searched" and existing_solution_found is False:
             new_status = "validated"
             action_msg = "No existing solution found via search grounding. Challenge classified and validated for matching."

@@ -22,7 +22,6 @@ GOVERNMENT_CATEGORY_STATUSES: Dict[str, List[str]] = {
         "pending",
         "under_review",
         "existing_solution_found",
-        "ineligible_gap",
     ],
     "allocated": [
         "routed",
@@ -36,6 +35,8 @@ GOVERNMENT_CATEGORY_STATUSES: Dict[str, List[str]] = {
     "rejected": [
         "rejected",
         "no_university_assigned",
+        "gap_invalid",
+        "ineligible_gap",
     ],
     "solved": [
         "resolved",
@@ -338,7 +339,9 @@ class GovernmentService:
         """
         counts = self.get_category_counts(district=district)
 
-        query = self.client.table("challenges").select("*")
+        query = self.client.table("challenges").select(
+            "challenge_id, title, description, location, city, district, address, pincode, impact_scope, status, submitted_by, user_id, created_at, expected_solution, government_rejection_reason, government_reviewed_at, government_reviewed_by"
+        )
         if district:
             query = query.eq("district", district)
 

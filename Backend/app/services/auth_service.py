@@ -90,6 +90,7 @@ class AuthenticatedUser:
 
 class AuthService:
     """Handles Supabase JWT validation, profiles lookup, and stakeholder resolution."""
+    _reconciled_users = set()
 
     def __init__(self):
         pass
@@ -558,23 +559,39 @@ class AuthService:
 
     def get_authenticated_user(self, user_id: str, email: Optional[str] = None) -> AuthenticatedUser:
         """Constructs an AuthenticatedUser by resolving profile and stakeholder."""
-        # Reconcile stakeholder record and profile role if necessary
-        self._reconcile_stakeholder_role(user_id, email)
+        # Fast path: If the user's role and stakeholder linkage have already been verified in-process,
+        # avoid repeatedly querying the Supabase admin auth API and scanning all 5 stakeholder tables.
+        needs_reconcile = user_id not in self._reconciled_users
+        profile = None
 
-        profile = self.get_profile(user_id)
-        role = profile.get("role", "citizen")
-        full_name = profile.get("full_name")
+        if not needs_reconcile:
+            try:
+                profile = self.get_profile(user_id)
+                role = profile.get("role", "citizen")
+                stakeholder, v_status, is_verified, approval_authority = self.resolve_stakeholder(
+                    user_id, role
+                )
+                if role != "citizen" and not stakeholder:
+                    needs_reconcile = True
+            except Exception:
+                needs_reconcile = True
 
-        stakeholder, v_status, is_verified, approval_authority = self.resolve_stakeholder(
-            user_id, role
-        )
+        if needs_reconcile:
+            self._reconcile_stakeholder_role(user_id, email)
+            self._reconciled_users.add(user_id)
+            profile = self.get_profile(user_id)
+            role = profile.get("role", "citizen")
+            stakeholder, v_status, is_verified, approval_authority = self.resolve_stakeholder(
+                user_id, role
+            )
 
+        full_name = profile.get("full_name") if profile else ""
         return AuthenticatedUser(
             user_id=user_id,
             email=email,
             role=role,
             full_name=full_name,
-            profile=profile,
+            profile=profile or {},
             stakeholder=stakeholder,
             verification_status=v_status,
             is_verified=is_verified,

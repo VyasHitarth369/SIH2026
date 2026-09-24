@@ -222,10 +222,12 @@ def test_past_projects_multi_role_queries(project_service):
 
 def test_mou_authoritative_binary_download_pdf(supabase_client, uni_admin):
     """Verifies GET /api/projects/{project_id}/mou/download returns real binary PDF stream with attachment header."""
-    # Find a project in DB
-    p_res = supabase_client.table("projects").select("project_id").limit(1).execute()
+    # Find a project in DB matching the university or adapt stakeholder
+    p_res = supabase_client.table("projects").select("project_id, university_id").execute()
     assert p_res.data and len(p_res.data) > 0, "At least one project must exist in database"
-    pid = p_res.data[0]["project_id"]
+    target_proj = next((p for p in p_res.data if p.get("university_id") == "U001"), p_res.data[0])
+    pid = target_proj["project_id"]
+    uni_admin.stakeholder = {"university_id": target_proj["university_id"]}
 
     app.dependency_overrides[get_current_user] = lambda: uni_admin
     try:

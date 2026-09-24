@@ -468,7 +468,7 @@ class AIService:
             or (len(clean_words) <= 5 and any(p == clean_text for p in generic_vague_phrases))
         )
 
-        if is_spam or is_gibberish or is_vague_phrase:
+        if is_spam or is_gibberish or is_vague_phrase or len(clean_text) < 4:
             return DeterministicGateResult(
                 decision="reject",
                 reason_code="meaningless_or_spam",
@@ -480,10 +480,9 @@ class AIService:
             )
 
         # ---------------------------------------------------------------------
-        # 2. Genuine Technology / Research Innovation Guard
+        # Step 2: Temporary Rejection Cases (Case 1: Potholes, Street light fixation, Bridge construction)
         # ---------------------------------------------------------------------
-        # Problems with explicit innovation, research, or engineering scope MUST NOT be
-        # rejected by the routine maintenance gate, even if they mention civic assets!
+        # Explicit innovation markers guard (e.g. "predictive street lighting telemetry")
         innovation_markers = [
             "predictive system", "predictive model", "predictive technology", "predictive",
             "iot-based", "iot sensor", "iot telemetry", "iot",
@@ -494,11 +493,68 @@ class AIService:
             "10,000", "city-wide telemetry", "ai-driven", "ai-based",
             "distributed sensor", "precision agriculture", "telemedicine architecture"
         ]
-        if any(im in text_lower for im in innovation_markers):
+        has_deep_tech = any(im in text_lower for im in innovation_markers)
+
+        is_potholes = ("pothole" in text_lower or "potholes" in text_lower)
+        is_street_light = ("street light" in text_lower or "streetlight" in text_lower or "street lights" in text_lower)
+        is_bridge_construction = (
+            "bridge construction" in text_lower
+            or ("bridge" in text_lower and any(w in text_lower for w in ["construct", "construction", "build", "building"]))
+        )
+
+        if not has_deep_tech:
+            if is_potholes:
+                return DeterministicGateResult(
+                    decision="reject",
+                    reason_code="routine_maintenance",
+                    reason="Routine municipal road and pothole repair; not eligible for university-level research.",
+                    category="transportation",
+                    subcategory="road_maintenance",
+                    innovation_scope="none",
+                    university_suitable=False,
+                )
+            if is_street_light:
+                return DeterministicGateResult(
+                    decision="reject",
+                    reason_code="routine_maintenance",
+                    reason="Routine municipal street light maintenance; not eligible for university-level research.",
+                    category="infrastructure",
+                    subcategory="street_lighting_maintenance",
+                    innovation_scope="none",
+                    university_suitable=False,
+                )
+            if is_bridge_construction:
+                return DeterministicGateResult(
+                    decision="reject",
+                    reason_code="routine_maintenance",
+                    reason="Routine civil construction project; not eligible for university-level research.",
+                    category="infrastructure",
+                    subcategory="civil_construction",
+                    innovation_scope="none",
+                    university_suitable=False,
+                )
+
+        # ---------------------------------------------------------------------
+        # Step 3: Existing-Solution Detection Guard (Case 2: Drainage) & Innovation Guard
+        # ---------------------------------------------------------------------
+        # Drainage MUST proceed to candidate retrieval and existing solution evaluation!
+        is_drainage = any(w in text_lower for w in ["drainage", "sewer", "drain overflow", "waterlogging"])
+        if is_drainage:
+            return DeterministicGateResult(
+                decision="continue",
+                reason_code="existing_solution_candidate",
+                reason="Drainage problem identified; proceeds to candidate matching and solution evaluation.",
+                category="sanitation",
+                subcategory="drainage_management",
+                innovation_scope="medium",
+                university_suitable=True,
+            )
+
+        if has_deep_tech:
             return DeterministicGateResult(
                 decision="continue",
                 reason_code="genuine_innovation_candidate",
-                reason="Submission contains technical or research innovation markers and proceeds to LLM analysis.",
+                reason="Submission contains technical or research innovation markers and proceeds to structured analysis.",
                 category="other",
                 subcategory="unclassified",
                 innovation_scope="high" if any(k in text_lower for k in ["predictive", "telemetry", "10,000", "ai", "machine learning"]) else "medium",
@@ -506,7 +562,7 @@ class AIService:
             )
 
         # ---------------------------------------------------------------------
-        # 3. Routine Municipal Maintenance Check
+        # Step 4: Other Routine Municipal Maintenance (Generic action + civic asset)
         # ---------------------------------------------------------------------
         action_stems = [
             "fix", "fixation", "fixing", "fixed",
@@ -520,42 +576,26 @@ class AIService:
             "restore", "restoring", "restored",
             "leaking", "leak", "patch", "patching"
         ]
-        civic_assets = [
-            "street light", "streetlight", "street-light", "street lights", "streetlights",
-            "lamp", "street lamp", "light pole", "street-lamp",
-            "pothole", "potholes", "road damage", "damaged road",
+        other_civic_assets = [
             "garbage", "trash", "waste bin", "dustbin", "waste dumping", "dumping",
             "leaking pipe", "water pipe", "pipeline leak", "tap", "public tap",
-            "drain", "sewer", "drainage", "drainage blockage", "clogged drain", "blocked drain",
             "bench", "public toilet", "broken pole", "broken sign", "broken bench"
         ]
-
         has_action = any(re.search(rf"\b{re.escape(act)}\b", text_lower) for act in action_stems) or any(act in text_lower for act in ["fixation", "maintenance", "unclog"])
-        has_asset = any(asset in text_lower for asset in civic_assets)
+        has_other_asset = any(asset in text_lower for asset in other_civic_assets)
 
         routine_exact_phrases = [
-            "street light fixation", "fix street light", "fix the street light", "repair street light",
-            "broken street light", "street light need to be fixed", "street light is broken",
-            "repair pothole", "fix pothole", "pothole on road", "clean garbage", "clean garbage near my house",
-            "fix leaking pipe", "fix leaking municipal pipe", "repair public tap", "replace broken bench", "fix drainage blockage",
-            "one streetlight", "single streetlight", "outside my house is broken", "near my house is broken"
+            "clean garbage", "clean garbage near my house",
+            "fix leaking pipe", "fix leaking municipal pipe", "repair public tap", "replace broken bench",
+            "outside my house is broken", "near my house is broken"
         ]
         has_routine_phrase = any(rp in text_lower for rp in routine_exact_phrases)
 
-        if (has_action and has_asset) or has_routine_phrase:
-            # Map domain accurately for routine maintenance
-            if any(w in text_lower for w in ["street light", "streetlight", "lamp", "pole", "sign"]):
-                cat, subcat = "infrastructure", "street_lighting_maintenance"
-            elif any(w in text_lower for w in ["pothole", "road damage", "road", "pavement"]):
-                cat, subcat = "transportation", "road_maintenance"
-            elif any(w in text_lower for w in ["garbage", "trash", "waste bin", "dustbin", "waste", "dumping"]):
+        if (has_action and has_other_asset) or has_routine_phrase:
+            if any(w in text_lower for w in ["garbage", "trash", "waste bin", "dustbin", "waste", "dumping"]):
                 cat, subcat = "sanitation", "waste_cleanup"
             elif any(w in text_lower for w in ["leaking pipe", "water pipe", "pipeline leak", "tap", "pipe"]):
                 cat, subcat = "water", "pipe_repair"
-            elif any(w in text_lower for w in ["drain", "sewer", "drainage blockage", "drainage", "clogged drain"]):
-                cat, subcat = "sanitation", "drainage_maintenance"
-            elif any(w in text_lower for w in ["toilet", "bench"]):
-                cat, subcat = "infrastructure", "facility_repair"
             else:
                 cat, subcat = "infrastructure", "routine_maintenance"
 
@@ -570,16 +610,16 @@ class AIService:
             )
 
         # ---------------------------------------------------------------------
-        # 4. Default: Proceed to LLM
+        # Step 5: Default: Valid Societal/Technological Challenge -> Continue
         # ---------------------------------------------------------------------
         return DeterministicGateResult(
             decision="continue",
-            reason_code="proceed_to_llm",
-            reason="Submission passed pre-LLM deterministic gate and proceeds to structured analysis.",
+            reason_code="proceed_to_analysis",
+            reason="Submission passed deterministic screening and proceeds to analysis and routing.",
             category="other",
             subcategory="unclassified",
-            innovation_scope="uncertain",
-            university_suitable=None,
+            innovation_scope="medium",
+            university_suitable=True,
         )
 
     def _build_call_1_from_gate_result(
@@ -1702,7 +1742,6 @@ Task:
             "pothole", "potholes", "road damage", "damaged road",
             "garbage", "trash", "waste bin", "dustbin", "waste dumping", "dumping",
             "leaking pipe", "water pipe", "pipeline leak", "tap",
-            "drain", "sewer", "drainage", "drainage blockage", "clogged drain", "blocked drain",
             "bench", "public toilet", "broken pole", "broken sign"
         ]
 
@@ -1717,7 +1756,18 @@ Task:
         ]
         has_routine_phrase = any(rp in text_lower for rp in routine_exact_phrases)
 
-        is_routine_maintenance = (not is_meaningless) and (not is_genuine_innovation) and ((has_action and has_asset) or has_routine_phrase)
+        is_drainage = any(w in text_lower for w in ["drainage", "sewer", "drain overflow", "waterlogging"])
+        is_potholes = ("pothole" in text_lower or "potholes" in text_lower)
+        is_street_light = ("street light" in text_lower or "streetlight" in text_lower or "street lights" in text_lower)
+        is_bridge_construction = (
+            "bridge construction" in text_lower
+            or ("bridge" in text_lower and any(w in text_lower for w in ["construct", "construction", "build", "building"]))
+        )
+
+        is_temporary_rejection = (is_potholes or is_street_light or is_bridge_construction) and (not is_genuine_innovation)
+        is_routine_maintenance = (not is_meaningless) and (not is_genuine_innovation) and (not is_drainage) and (
+            is_temporary_rejection or ((has_action and has_asset) or has_routine_phrase)
+        )
 
         # ---------------------------------------------------------------------
         # Decision Routing & Classification
@@ -1742,13 +1792,16 @@ Task:
             status = "ineligible"
             innovation_scope = "none"
             university_suitable = False
-            suitability_reason = "Routine municipal maintenance/service request; no university-level research, technology development, or innovation requirement."
-            reason = "Routine municipal maintenance request; not eligible for university-level research or innovation workflow."
+            suitability_reason = "Routine municipal maintenance/civil work request; no university-level research or innovation requirement."
+            reason = "Routine municipal maintenance or civil work request; not eligible for university-level research or innovation workflow."
             confidence = "high"
             next_action = "reject"
 
             # Domain-accurate categorization for routine maintenance
-            if any(w in text_lower for w in ["street light", "streetlight", "lamp", "pole", "sign"]):
+            if is_bridge_construction:
+                category = "infrastructure"
+                subcategory = "civil_construction"
+            elif any(w in text_lower for w in ["street light", "streetlight", "lamp", "pole", "sign"]):
                 category = "infrastructure"
                 subcategory = "street_lighting_maintenance"
             elif any(w in text_lower for w in ["pothole", "road damage", "road", "pavement"]):
@@ -1760,9 +1813,6 @@ Task:
             elif any(w in text_lower for w in ["leaking pipe", "water pipe", "pipeline leak", "tap", "pipe"]):
                 category = "water"
                 subcategory = "pipe_repair"
-            elif any(w in text_lower for w in ["drain", "sewer", "drainage blockage", "drainage", "clogged drain"]):
-                category = "sanitation"
-                subcategory = "drainage_maintenance"
             elif any(w in text_lower for w in ["toilet", "bench"]):
                 category = "infrastructure"
                 subcategory = "facility_repair"
@@ -1826,59 +1876,72 @@ Task:
                 techs = [TechRequirement(name="Python", importance="important")]
 
         else:
-            # SCREEN D: Insufficient evidence / offline general domain matching
-            # Must remain UNCERTAIN, and NEVER route to Government
-            status = "uncertain"
-            reason = "Automated AI validation service is temporarily offline. Problem statement requires manual or pending review."
-            innovation_scope = "uncertain"
-            university_suitable = None
-            suitability_reason = "Automated assessment offline; suitability undetermined."
-            confidence = "low"
-            next_action = "uncertain_review"
+            # SCREEN D: Valid societal/technological challenge fallback
+            # (Guarantees meaningful problems like "Exam question paper software", "Malnutrition" are valid)
+            status = "valid"
+            reason = "Problem statement validated as an applied research or technological challenge under deterministic fallback."
+            innovation_scope = "medium"
+            university_suitable = True
+            suitability_reason = "Problem requires technological, analytical, or applied engineering solutions."
+            confidence = "medium"
+            next_action = "continue_to_matching"
 
             # Check general domain keywords
-            if any(w in text_lower for w in ["water", "drinking water", "borewell", "contamination", "water supply", "arsenic"]):
+            if any(w in text_lower for w in ["exam", "question paper", "paper software", "curriculum", "school", "education"]):
+                category = "education"
+                subcategory = "academic_software"
+                skills = [SkillRequirement(name="Software Engineering", importance="essential"), SkillRequirement(name="Information Security", importance="important")]
+                techs = [TechRequirement(name="Python", importance="important"), TechRequirement(name="Database Systems", importance="important")]
+            elif any(w in text_lower for w in ["malnutrition", "malnutitrion", "nutrition", "stunting", "child health", "diet"]):
+                category = "healthcare"
+                subcategory = "public_health_nutrition"
+                skills = [SkillRequirement(name="Nutritional Epidemiology", importance="essential"), SkillRequirement(name="Public Health Diagnostics", importance="essential")]
+                techs = [TechRequirement(name="Data Analytics", importance="important"), TechRequirement(name="Mobile Health Frameworks", importance="optional")]
+            elif any(w in text_lower for w in ["water", "drinking water", "borewell", "contamination", "water supply", "arsenic"]):
                 category = "water"
                 subcategory = "water_contamination" if any(w in text_lower for w in ["contaminat", "disease", "poison", "arsenic", "pollut"]) else "water_supply"
                 skills = [SkillRequirement(name="Hydraulic Systems", importance="essential"), SkillRequirement(name="IoT Water Sensors", importance="important")]
                 techs = [TechRequirement(name="ESP32", importance="important"), TechRequirement(name="Cloud Telemetry", importance="optional")]
-                confidence = "medium"
-            elif any(w in text_lower for w in ["road", "pothole", "traffic", "highway", "bus", "transport"]):
+            elif any(w in text_lower for w in ["road", "traffic", "highway", "bus", "transport"]):
                 category = "transportation"
-                subcategory = "road_potholes" if "pothole" in text_lower else ("traffic_management" if "traffic" in text_lower else "road_infrastructure")
+                subcategory = "traffic_management" if "traffic" in text_lower else "road_infrastructure"
                 skills = [SkillRequirement(name="Computer Vision", importance="essential"), SkillRequirement(name="Civil Engineering", importance="important")]
                 techs = [TechRequirement(name="Python", importance="important"), TechRequirement(name="GIS Mapping", importance="optional")]
-                confidence = "medium"
             elif any(w in text_lower for w in ["crop", "mustard", "wheat", "pesticide", "fungal", "agriculture", "farmer"]):
                 category = "agriculture"
                 subcategory = "crop_disease" if any(w in text_lower for w in ["disease", "fungal", "rust", "pest"]) else "farm_management"
                 skills = [SkillRequirement(name="Agronomy", importance="essential"), SkillRequirement(name="Plant Pathology", importance="essential")]
                 techs = [TechRequirement(name="Spectral Imaging", importance="optional")]
-                confidence = "medium"
             elif any(w in text_lower for w in ["maternal", "infant", "hospital", "doctor", "health", "obstetric", "clinic"]):
                 category = "healthcare"
                 subcategory = "maternal_health" if any(w in text_lower for w in ["maternal", "pregnant", "infant", "obstetric"]) else "primary_healthcare"
                 skills = [SkillRequirement(name="Medical Diagnostics", importance="essential"), SkillRequirement(name="Public Health Systems", importance="important")]
                 techs = [TechRequirement(name="Telemedicine Architecture", importance="important")]
-                confidence = "medium"
             elif any(w in text_lower for w in ["cyber", "vulnerabilit", "firewall", "malware", "breach", "intranet", "hack"]):
                 category = "cybersecurity"
                 subcategory = "network_vulnerability"
                 skills = [SkillRequirement(name="Network Security", importance="essential"), SkillRequirement(name="Vulnerability Assessment", importance="essential")]
                 techs = [TechRequirement(name="Firewall Systems", importance="important")]
-                confidence = "medium"
             elif any(w in text_lower for w in ["solar", "power", "electricity", "grid", "energy"]):
                 category = "energy"
                 subcategory = "renewable_power"
                 skills = [SkillRequirement(name="Power Electronics", importance="essential")]
                 techs = [TechRequirement(name="Solar Inverters", importance="important")]
-                confidence = "medium"
-            elif any(w in text_lower for w in ["garbage", "dump", "solid waste", "sanitation", "sewage"]):
+            elif any(w in text_lower for w in ["drainage", "sewer", "drain overflow", "waterlogging", "sanitation"]):
+                category = "sanitation"
+                subcategory = "drainage_management"
+                skills = [SkillRequirement(name="Hydraulic Systems", importance="essential"), SkillRequirement(name="Waste Management Engineering", importance="important")]
+                techs = [TechRequirement(name="IoT Water Sensors", importance="important")]
+            elif any(w in text_lower for w in ["garbage", "dump", "solid waste"]):
                 category = "sanitation"
                 subcategory = "solid_waste_management"
                 skills = [SkillRequirement(name="Waste Management Engineering", importance="essential")]
                 techs = [TechRequirement(name="IoT Fill-Level Sensors", importance="important")]
-                confidence = "medium"
+            else:
+                category = "technology"
+                subcategory = "applied_innovation"
+                skills = [SkillRequirement(name="Applied Engineering", importance="essential"), SkillRequirement(name="Software Engineering", importance="important")]
+                techs = [TechRequirement(name="Python", importance="important")]
 
         # Severity & population scale defaults
         severity_level = 3 if any(w in text_lower for w in ["fatal", "accident", "disease", "outbreak", "death", "critical", "severe"]) else (1 if is_routine_maintenance else 2)
@@ -1893,8 +1956,9 @@ Task:
 
         cand_rels = []
         dup_cands = []
+        int_sols = []
         if candidate_records:
-            cand_rels, _, best_dup_id = self._evaluate_candidate_relationships(challenge, candidate_records)
+            cand_rels, int_sols, best_dup_id = self._evaluate_candidate_relationships(challenge, candidate_records)
             if best_dup_id:
                 best_dup_cand = next((r for r in cand_rels if r.challenge_id == best_dup_id), None)
                 dup_cands = [
