@@ -3,6 +3,7 @@ from app.schemas.challenge import ChallengeCreate, ChallengeResponse
 from app.schemas.analysis import (
     AIAnalysisResponse,
     ExistingSolutionDecisionRequest,
+    DuplicateGateDecisionRequest,
     AnalyzeChallengeResponse,
 )
 from app.schemas.matching import (

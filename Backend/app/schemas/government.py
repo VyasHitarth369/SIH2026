@@ -130,6 +130,9 @@ class GovernmentProblemItem(BaseModel):
     government_reviewed_at: Optional[str] = None
     government_reviewed_by: Optional[str] = None
     university_rejections: List[Dict[str, Any]] = Field(default_factory=list)
+    top_universities: Optional[List[Dict[str, Any]]] = None
+    top_industries: Optional[List[Dict[str, Any]]] = None
+    industry_matching_status: Optional[str] = "Pending"
 
     model_config = ConfigDict(extra="ignore")
 
@@ -153,6 +156,7 @@ class GovernmentDecisionResponse(BaseModel):
     government_reviewed_at: Optional[str] = None
     government_reviewed_by: Optional[str] = None
     university_matches: Optional[List[Dict[str, Any]]] = None
+    top_universities: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(extra="ignore")
 

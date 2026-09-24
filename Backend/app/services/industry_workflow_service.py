@@ -13,6 +13,7 @@ from fastapi import HTTPException, status
 
 from app.database import get_supabase
 from app.services.auth_service import AuthenticatedUser
+from app.utils.storage_utils import resolve_document_signed_url
 
 
 class IndustryWorkflowService:
@@ -828,6 +829,32 @@ class IndustryWorkflowService:
                 except Exception:
                     pass
 
+            ch_doc = None
+            if p.get("challenge_id"):
+                try:
+                    ch_res = self.client.table("challenges").select("title, document").eq("challenge_id", p["challenge_id"]).execute()
+                    if ch_res.data:
+                        raw_doc = ch_res.data[0].get("document")
+                        if raw_doc and str(raw_doc).strip() not in ["", "-", "None", "null"]:
+                            ch_doc = str(raw_doc).strip()
+                except Exception:
+                    pass
+
+            if not ch_doc and p.get("challenge_id"):
+                try:
+                    cim_res = self.client.table("challenge_industry_matches").select("response_note").eq("challenge_id", p["challenge_id"]).execute()
+                    for r in (cim_res.data or []):
+                        note = r.get("response_note") or ""
+                        if "MOU_URL:" in note:
+                            ch_doc = note.split("MOU_URL:")[-1].strip()
+                            break
+                        elif note.startswith("http://") or note.startswith("https://"):
+                            ch_doc = note.strip()
+                            break
+                except Exception:
+                    pass
+
+            has_doc = bool(ch_doc and str(ch_doc).strip() not in ["", "-", "None", "null"])
             mous.append({
                 "mou_id": f"MOU-IND-{emp_industry}-{pid}",
                 "project_id": pid,
@@ -839,8 +866,8 @@ class IndustryWorkflowService:
                 "government_partner": "Government of Jharkhand",
                 "status": "Active Collaboration" if p.get("status") in ["active", "prototype", "pilot", "deployed", "solved", "completed"] else "Initiated",
                 "effective_date": p.get("start_date") or p.get("created_at") or "In Effect",
-                "has_document": False,
-                "document_url": None,
+                "has_document": has_doc,
+                "document_url": resolve_document_signed_url(ch_doc) if has_doc else None,
             })
 
         return mous

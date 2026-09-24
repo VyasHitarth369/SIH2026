@@ -211,8 +211,20 @@ workflow_service = ProjectWorkflowService(client=mock_client)
 
 
 class MockUniService:
+    def __init__(self):
+        self.client = mock_client
+
     def list_projects(self, **kwargs):
         return workflow_service.list_projects_for_user(None, **kwargs)
+
+    def _get_project_or_404(self, project_id: str):
+        return workflow_service._get_project_or_404(project_id)
+
+    def _resolve_university_admin_record(self, user):
+        return workflow_service._resolve_university_admin_record(user)
+
+    def _resolve_faculty_record(self, user):
+        return workflow_service._resolve_faculty_record(user)
 
 
 app.dependency_overrides[get_project_workflow_service] = lambda: workflow_service

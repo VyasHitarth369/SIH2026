@@ -475,7 +475,7 @@ def run_all_tests():
 
     # Rank 1 rejects
     app.dependency_overrides[get_current_user] = lambda: admin_u1
-    r2_reject = client.post(f"/api/challenges/{cid2}/universities/{top_uni_id}/respond", json={"action": "reject"})
+    r2_reject = client.post(f"/api/challenges/{cid2}/universities/{top_uni_id}/respond", json={"action": "reject", "response_note": "Department at capacity."})
     assert r2_reject.status_code == 200
     assert r2_reject.json()["data"]["action_taken"] == "university_rejected"
 
@@ -641,7 +641,7 @@ def run_all_tests():
     # -------------------------------------------------------------
     print("\n[TEST 14] Valid Industry SPOC can reject own industry request:")
     app.dependency_overrides[get_current_user] = lambda: spoc_ind2
-    r14 = client.post(f"/api/challenges/{cid}/industries/{sec_ind_id}/respond", json={"action": "reject"})
+    r14 = client.post(f"/api/challenges/{cid}/industries/{sec_ind_id}/respond", json={"action": "reject", "response_note": "Currently focusing on other projects."})
     assert r14.status_code == 200
     assert r14.json()["data"]["status"] == "rejected"
     print("  [PASS] Industry SPOC rejected collaboration proposal.")

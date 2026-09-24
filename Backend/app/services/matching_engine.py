@@ -63,11 +63,16 @@ def normalize_token(token: str) -> str:
     return CANONICAL_SYNONYMS.get(clean, clean)
 
 
-def extract_tokens(text: Optional[str]) -> List[str]:
-    """Splits a comma, semicolon, or slash separated string into a list of normalized tokens."""
-    if not text or not isinstance(text, str):
+def extract_tokens(text: Any) -> List[str]:
+    """Splits a comma/semicolon separated string or iterates a list into normalized tokens."""
+    if not text:
         return []
-    raw_items = re.split(r"[,;/|•\n]+", text)
+    if isinstance(text, list):
+        raw_items = [str(item) for item in text if item]
+    elif isinstance(text, str):
+        raw_items = re.split(r"[,;/|•\n]+", text)
+    else:
+        return []
     tokens = []
     for item in raw_items:
         norm = normalize_token(item)
@@ -168,15 +173,15 @@ def score_university_candidate(
     score_techs = round(25.0 * tech_ratio, 2)
 
     # 3. Research Areas (15%)
-    research_ratio, _ = calculate_overlap_ratio(req_domain + req_focus, uni_research)
+    research_ratio, matched_research = calculate_overlap_ratio(req_domain + req_focus, uni_research)
     score_research = round(15.0 * research_ratio, 2)
 
     # 4. Domain (10%)
-    domain_ratio, _ = calculate_overlap_ratio(req_domain, uni_domain)
+    domain_ratio, matched_domains = calculate_overlap_ratio(req_domain, uni_domain)
     score_domain = round(10.0 * domain_ratio, 2)
 
     # 5. Primary Focus (10%)
-    focus_ratio, _ = calculate_overlap_ratio(req_focus, uni_focus)
+    focus_ratio, matched_focus = calculate_overlap_ratio(req_focus, uni_focus)
     score_focus = round(10.0 * focus_ratio, 2)
 
     # 6. Departments (5%)
@@ -215,6 +220,9 @@ def score_university_candidate(
         "departments": score_depts,
         "facilities": score_facilities,
         "past_projects": score_past_projects,
+        "matched_skills": matched_skills,
+        "matched_technologies": matched_techs,
+        "matched_domains": matched_domains or matched_focus,
     }
 
     # Deterministic qualitative verdict label
@@ -245,32 +253,124 @@ def rank_universities(
     challenge: Dict[str, Any],
     analysis: Dict[str, Any],
     universities: List[Dict[str, Any]],
+    workloads: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
-    """Deterministically scores, ranks, and sorts all candidate universities."""
-    scored_candidates = []
+    """Deterministically scores, ranks, and sorts all candidate universities.
+
+    Ranking Priority:
+    1. Base expertise & capability suitability (0-100)
+    2. Active-project workload balancing:
+       If active-project difference >= 3, prefer the university with fewer active projects
+       (without allowing a clearly weak match to overtake a strong match).
+    3. Deterministic fair tie-breaking:
+       Ties broken by fewer active projects, then challenge-specific hash (sha256(challenge_id:university_id)).
+       Eliminates hardcoded institutional bias (e.g. U001 alphabetical preference).
+    """
+    import hashlib
 
     challenge_id = challenge.get("challenge_id", "")
+    if workloads is None:
+        workloads = {}
 
+    # Step 1: Compute base score and capability overlap for each candidate
+    candidate_data = []
+    active_counts = []
     for u in universities:
-        score, breakdown, reason = score_university_candidate(challenge, analysis, u)
+        uid = u["university_id"]
+        base_score, breakdown, base_reason = score_university_candidate(challenge, analysis, u)
+        active_proj = int(workloads.get(uid, 0))
+        active_counts.append(active_proj)
+        candidate_data.append({
+            "university": u,
+            "uid": uid,
+            "base_score": base_score,
+            "breakdown": breakdown,
+            "base_reason": base_reason,
+            "active_projects": active_proj,
+        })
+
+    # Minimum active projects across evaluated candidates
+    min_workload = min(active_counts) if active_counts else 0
+
+    # Step 2: Apply Active Project Workload Balancing Rule (Difference >= 3)
+    scored_candidates = []
+    for item in candidate_data:
+        u = item["university"]
+        uid = item["uid"]
+        base_score = item["base_score"]
+        breakdown = item["breakdown"]
+        base_reason = item["base_reason"]
+        active_proj = item["active_projects"]
+
+        # Calculate excess workload relative to lowest loaded candidate
+        workload_diff = active_proj - min_workload
+        workload_adjustment = 0.0
+        workload_advantage_applied = False
+
+        if workload_diff >= 3 and base_score > 0:
+            excess_tiers = workload_diff // 3
+            # Scaled adjustment of 3.0 points per 3-project excess (capped at 7.5 points)
+            # This ensures lower-workload universities gain preference when scores are close,
+            # but prevents weak matches from overtaking high-relevance institutions.
+            workload_adjustment = - round(min(excess_tiers * 3.0, 7.5), 2)
+        elif workload_diff == 0 and any(c["active_projects"] - active_proj >= 3 for c in candidate_data if c["base_score"] > 0):
+            # Candidate has a significant workload advantage (>=3 fewer projects than loaded peers)
+            workload_advantage_applied = True
+
+        final_score = round(max(base_score + workload_adjustment, 0.0), 2)
+
+        # Enriched explainable match reason
+        skills_text = f"Matched skills: {', '.join(breakdown.get('matched_skills', [])[:3])}." if breakdown.get("matched_skills") else "No direct skills overlap."
+        techs_text = f"Matched technologies: {', '.join(breakdown.get('matched_technologies', [])[:3])}." if breakdown.get("matched_technologies") else "No direct tech overlap."
+
+        if workload_adjustment < 0:
+            workload_note = f"Workload adjustment of {workload_adjustment} applied ({active_proj} active projects)."
+        elif workload_advantage_applied:
+            workload_note = f"Workload advantage applied ({active_proj} active projects vs loaded peers)."
+        else:
+            workload_note = f"Current workload: {active_proj} active projects."
+
+        base_verdict = base_reason.split(".")[0] if "." in base_reason else base_reason
+        enriched_reason = (
+            f"{base_verdict}. (Base Match: {base_score}%, Final Rank Score: {final_score}%). "
+            f"{skills_text} {techs_text} {workload_note}"
+        )
+
+        # Deterministic challenge-specific hash for tertiary tie-breaking
+        hash_digest = hashlib.sha256(f"{challenge_id}:{uid}".encode("utf-8")).hexdigest()
+
         scored_candidates.append({
             "challenge_id": challenge_id,
-            "university_id": u["university_id"],
+            "university_id": uid,
             "university_name": u.get("university_name") or u.get("name"),
             "city": u.get("city"),
             "district": u.get("district"),
-            "match_score": score,
+            "institution_type": u.get("institution_type") or "University",
+            "base_score": base_score,
+            "match_score": final_score,
             "score_breakdown": breakdown,
-            "match_reason": reason,
+            "active_projects": active_proj,
+            "active_project_count": active_proj,
+            "workload_adjustment": workload_adjustment,
+            "workload_advantage_applied": workload_advantage_applied,
+            "match_reason": enriched_reason,
             "status": "recommended",
+            "matched_skills": breakdown.get("matched_skills", []),
+            "matched_technologies": breakdown.get("matched_technologies", []),
+            "matched_domains": breakdown.get("matched_domains", []),
+            "_tie_key": hash_digest,
         })
 
-    # Sort strictly descending by match_score; break ties deterministically by university_id
-    scored_candidates.sort(key=lambda x: (-x["match_score"], x["university_id"]))
+    # Step 3: Sort using fair multi-criteria key:
+    # 1. Final score descending (-x["match_score"])
+    # 2. Active projects ascending (x["active_projects"])
+    # 3. Challenge-specific hash ascending (x["_tie_key"]) - eliminates U001 alphabetical bias
+    scored_candidates.sort(key=lambda x: (-x["match_score"], x["active_projects"], x["_tie_key"]))
 
     # Assign rank 1, 2, 3...
     for i, c in enumerate(scored_candidates, start=1):
         c["rank"] = i
+        c.pop("_tie_key", None)
 
     return scored_candidates
 

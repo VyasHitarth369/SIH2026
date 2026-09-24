@@ -5,9 +5,12 @@ Management (Phase 5).
 """
 
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import os
+import uuid
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 
 from app.dependencies.auth import get_current_user, get_current_user_optional
+from app.utils.storage_utils import resolve_document_signed_url
 from app.schemas.industry import (
     EmployeeInterestCreate,
     EmployeeInterestUpdate,
@@ -566,6 +569,306 @@ def list_my_industry_mous(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch industry MOUs: {str(e)}",
         )
+
+
+# -----------------------------------------------------------------------------
+# 6h. POST /api/projects/{project_id}/mou — Upload and Persist Signed MOU Document
+# -----------------------------------------------------------------------------
+@router.post(
+    "/{project_id}/mou",
+    summary="Upload and persist official signed MOU document to Supabase Storage",
+)
+async def upload_project_mou(
+    project_id: str,
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    uni_service: UniversityWorkflowService = Depends(get_workflow_service),
+):
+    """Uploads an official signed MOU document to Supabase Storage ('documents' bucket)
+    and updates the project's MOU records.
+    Authorized:
+    - university_admin (must belong to project's university)
+    - industry_employee SPOC with approval_authority (must belong to project's industry)
+    - government
+    Validates file format (PDF, DOCX, DOC, PNG, JPG/JPEG) and max size (10 MB).
+    """
+    content = await file.read()
+    data = uni_service.upload_project_mou(
+        project_id=project_id,
+        filename=file.filename or "mou_document.pdf",
+        content=content,
+        content_type=file.content_type or "application/pdf",
+        user=current_user,
+    )
+    return {
+        "success": True,
+        "message": "Official signed MOU document uploaded and persisted successfully.",
+        "data": data,
+    }
+
+
+# -----------------------------------------------------------------------------
+# 6i. POST /api/projects/{project_id}/mou-json — JSON Base64 MOU Upload
+# -----------------------------------------------------------------------------
+@router.post(
+    "/{project_id}/mou-json",
+    summary="Upload and persist official signed MOU document via JSON payload",
+)
+async def upload_project_mou_json(
+    project_id: str,
+    payload: Dict[str, Any],
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    uni_service: UniversityWorkflowService = Depends(get_workflow_service),
+):
+    """Uploads an official signed MOU document provided as a base64 encoded string or Data URL."""
+    import base64
+    filename = payload.get("filename") or "mou_document.pdf"
+    file_b64 = payload.get("file_base64") or payload.get("content_base64") or ""
+    if not file_b64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Payload must include 'file_base64' string.",
+        )
+    if "base64," in file_b64:
+        file_b64 = file_b64.split("base64,")[-1]
+
+    try:
+        content = base64.b64decode(file_b64)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid base64 payload: {str(e)}",
+        )
+
+    content_type = payload.get("content_type") or "application/pdf"
+    data = uni_service.upload_project_mou(
+        project_id=project_id,
+        filename=filename,
+        content=content,
+        content_type=content_type,
+        user=current_user,
+    )
+    return {
+        "success": True,
+        "message": "Official signed MOU document uploaded and persisted successfully.",
+        "data": data,
+    }
+
+
+# -----------------------------------------------------------------------------
+# 6j. GET /api/projects/{project_id}/mou/document — Secure Authorized MOU Access
+# -----------------------------------------------------------------------------
+@router.get(
+    "/{project_id}/mou/document",
+    summary="Securely view or download the authorized MOU document",
+)
+def get_project_mou_document(
+    project_id: str,
+    stream: bool = False,
+    download: bool = False,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    uni_service: UniversityWorkflowService = Depends(get_workflow_service),
+):
+    """Provides secure, authorized access to a project's legal MOU document.
+    Access Control:
+    - government: Authorized to view all state project MOUs
+    - university_admin: Authorized if the project belongs to their university
+    - industry_employee / industry: Authorized if the project belongs to their industry partner
+    - faculty / student: Authorized if assigned to the project or participating institution
+    - unauthorized users: HTTP 403 Forbidden
+    """
+    project = uni_service._get_project_or_404(project_id)
+    uni_id = project.get("university_id")
+    ind_id = project.get("industry_id")
+    cid = project.get("challenge_id")
+
+    # Authorize user
+    is_authorized = False
+    if current_user.role == "government":
+        is_authorized = True
+    elif current_user.role == "university_admin":
+        admin_rec = uni_service._resolve_university_admin_record(current_user)
+        user_uni = (admin_rec or {}).get("university_id") or (current_user.stakeholder or {}).get("university_id")
+        if user_uni and user_uni == uni_id:
+            is_authorized = True
+    elif current_user.role in ["industry_employee", "industry"]:
+        emp_ind = (current_user.stakeholder or {}).get("industry_id")
+        if not emp_ind:
+            try:
+                emp_rec = uni_service.client.table("industry_employees").select("industry_id").eq("user_id", current_user.user_id).execute()
+                if emp_rec.data:
+                    emp_ind = emp_rec.data[0].get("industry_id")
+            except Exception:
+                pass
+        if emp_ind and emp_ind == ind_id:
+            is_authorized = True
+    elif current_user.role in ["faculty", "student"]:
+        try:
+            team_rec = uni_service.client.table("student_teams").select("team_id").eq("project_id", project_id).execute()
+            if team_rec.data:
+                t_ids = [t["team_id"] for t in team_rec.data]
+                if current_user.role == "student":
+                    st_rec = uni_service.client.table("students").select("student_id").eq("user_id", current_user.user_id).in_("team_id", t_ids).execute()
+                    if st_rec.data:
+                        is_authorized = True
+            if current_user.role == "faculty":
+                fac_rec = uni_service.client.table("faculty").select("faculty_id").eq("user_id", current_user.user_id).execute()
+                if fac_rec.data:
+                    fac_id = fac_rec.data[0]["faculty_id"]
+                    if project.get("faculty_id") == fac_id:
+                        is_authorized = True
+                    else:
+                        pf_rec = uni_service.client.table("project_faculty").select("*").eq("project_id", project_id).eq("faculty_id", fac_id).execute()
+                        if pf_rec.data:
+                            is_authorized = True
+        except Exception:
+            pass
+
+    if not is_authorized:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: You do not have authorization to view the MOU for this project.",
+        )
+
+    # Locate document URL/path
+    ch_doc = None
+    if cid:
+        try:
+            ch_res = uni_service.client.table("challenges").select("document").eq("challenge_id", cid).execute()
+            if ch_res.data and ch_res.data[0].get("document"):
+                raw = str(ch_res.data[0]["document"]).strip()
+                if raw not in ["", "-", "None", "null"]:
+                    ch_doc = raw
+        except Exception:
+            pass
+
+    if not ch_doc and cid:
+        try:
+            cim_res = uni_service.client.table("challenge_industry_matches").select("response_note").eq("challenge_id", cid).execute()
+            for r in (cim_res.data or []):
+                note = r.get("response_note") or ""
+                if "MOU_URL:" in note:
+                    ch_doc = note.split("MOU_URL:")[-1].strip()
+                    break
+        except Exception:
+            pass
+
+    # If streaming or direct download is requested
+    if stream or download:
+        # Case A: An uploaded signed document exists in Supabase storage
+        if ch_doc:
+            storage_path = ch_doc
+            if "/documents/" in storage_path:
+                storage_path = storage_path.split("/documents/")[-1].split("?")[0]
+            try:
+                content_bytes = uni_service.client.storage.from_("documents").download(storage_path)
+                if content_bytes and len(content_bytes) > 0:
+                    ext = storage_path.split(".")[-1].lower() if "." in storage_path else "pdf"
+                    if ext == "pdf":
+                        mime = "application/pdf"
+                    elif ext in ["docx", "doc"]:
+                        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    elif ext == "png":
+                        mime = "image/png"
+                    elif ext in ["jpg", "jpeg"]:
+                        mime = "image/jpeg"
+                    else:
+                        mime = "application/octet-stream"
+
+                    disposition = "attachment" if download else "inline"
+                    safe_filename = f"VidySetu-MOU-{project_id}.{ext}"
+                    return Response(
+                        content=content_bytes,
+                        media_type=mime,
+                        headers={"Content-Disposition": f'{disposition}; filename="{safe_filename}"'},
+                    )
+            except Exception:
+                pass
+
+        # Case B: No uploaded document in storage — generate official tripartite template PDF
+        from app.utils.mou_generator import generate_mou_pdf
+        uni_name = uni_id
+        ind_name = ind_id
+        try:
+            from app.database import get_supabase
+            sb = get_supabase()
+            if uni_id:
+                u_res = sb.table("universities").select("university_name").eq("university_id", uni_id).limit(1).execute()
+                if u_res and u_res.data:
+                    uni_name = u_res.data[0].get("university_name") or uni_id
+            if ind_id:
+                i_res = sb.table("industries").select("industry_name").eq("industry_id", ind_id).limit(1).execute()
+                if i_res and i_res.data:
+                    ind_name = i_res.data[0].get("industry_name") or ind_id
+        except Exception:
+            pass
+
+        pdf_bytes = generate_mou_pdf({
+            "project_id": project_id,
+            "project_title": project.get("project_title") or "Collaborative Innovation Project",
+            "description": project.get("description") or "Applied collaborative research and prototype development.",
+            "university_name": uni_name,
+            "university_id": uni_id,
+            "industry_name": ind_name,
+            "industry_id": ind_id,
+            "effective_date": project.get("start_date") or "Current Academic Session",
+        })
+        disposition = "attachment" if download else "inline"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'{disposition}; filename="VidySetu-MOU-{project_id}.pdf"'},
+        )
+
+    # Metadata request (download=False)
+    if ch_doc:
+        storage_path = ch_doc
+        if "/documents/" in storage_path:
+            storage_path = storage_path.split("/documents/")[-1].split("?")[0]
+        signed_url = resolve_document_signed_url(storage_path) or ch_doc
+        return {
+            "success": True,
+            "project_id": project_id,
+            "has_uploaded_document": True,
+            "document_url": signed_url,
+            "filename": storage_path.split("/")[-1],
+            "download_url": f"/api/projects/{project_id}/mou/download",
+        }
+    else:
+        return {
+            "success": True,
+            "project_id": project_id,
+            "has_uploaded_document": False,
+            "template_available": True,
+            "document_url": None,
+            "filename": f"VidySetu-MOU-{project_id}.pdf",
+            "download_url": f"/api/projects/{project_id}/mou/download",
+        }
+
+
+# -----------------------------------------------------------------------------
+# 6k. GET /api/projects/{project_id}/mou/download — Direct Authoritative Download
+# -----------------------------------------------------------------------------
+@router.get(
+    "/{project_id}/mou/download",
+    summary="Download the authoritative MOU document (PDF or DOCX)",
+)
+def download_project_mou(
+    project_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    uni_service: UniversityWorkflowService = Depends(get_workflow_service),
+):
+    """Directly downloads the legal MOU document for the project.
+
+    Returns binary bytes with Content-Disposition: attachment.
+    """
+    return get_project_mou_document(
+        project_id=project_id,
+        stream=True,
+        download=True,
+        current_user=current_user,
+        uni_service=uni_service,
+    )
 
 
 # -----------------------------------------------------------------------------

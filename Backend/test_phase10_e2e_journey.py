@@ -26,6 +26,7 @@ from starlette.testclient import TestClient
 from app.main import app
 from app.dependencies.auth import get_current_user, get_current_user_optional
 from app.services.auth_service import AuthenticatedUser
+from app.services.ai_service import AIService
 from app.services.challenge_service import ChallengeService
 from app.services.matching_service import MatchingService
 from app.services.university_workflow_service import UniversityWorkflowService
@@ -181,6 +182,10 @@ class MockMasterQueryBuilder:
         self.filters.append(("eq", field, value))
         return self
 
+    def neq(self, field: str, value: Any):
+        self.filters.append(("neq", field, value))
+        return self
+
     def in_(self, field: str, values: List[Any]):
         self.filters.append(("in", field, values))
         return self
@@ -198,6 +203,9 @@ class MockMasterQueryBuilder:
         for f_type, field, val in self.filters:
             if f_type == "eq":
                 if str(row.get(field)) != str(val):
+                    return False
+            elif f_type == "neq":
+                if str(row.get(field)) == str(val):
                     return False
             elif f_type == "in":
                 if row.get(field) not in val:
@@ -321,6 +329,71 @@ class MockMasterClient:
         return MockMasterQueryBuilder(self.db, table_name)
 
 
+class MockMasterAIService(AIService):
+    def analyze_call_1(self, challenge: Dict[str, Any], existing_challenges: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        return {
+            "category": "Water Management & Sanitation",
+            "subcategory": "Water Quality & Treatment",
+            "ai_summary": "High fluoride concentration in groundwater affecting rural habitations.",
+            "required_skills": "Water Chemistry, Nanomaterials, Hydrology",
+            "required_technologies": "Spectrophotometry, IoT Water Quality Sensors",
+            "severity": "high",
+            "priority": "high",
+            "validity": "valid",
+            "innovation_scope": "high",
+            "feasibility": "high",
+            "solution_found": True,
+            "existing_solution_found": True,
+            "existing_solution": "Centralized Municipal Water Supply Pipeline Scheme",
+            "solutions": [
+                {
+                    "solution_name": "Centralized Municipal Water Supply Pipeline Scheme",
+                    "provider": "Department of Drinking Water & Sanitation",
+                    "description": "State rural piped water supply project for fluoride reduction.",
+                    "source_url": "https://jharkhand.gov.in/water",
+                    "source": "external",
+                    "relevance_score": 0.88,
+                }
+            ],
+            "external_search_status": "searched",
+            "internal_search_status": "searched",
+            "internal_solutions": [],
+            "image_evidence_status": "not_provided",
+            "university_suitable": True,
+            "duplicate_group": None,
+            "candidate_relationships": [],
+            "similar_challenges": [],
+            "confidence_score": 0.95,
+            "provider_used": "gemini",
+        }
+
+    def analyze_call_2_gap_validation(
+        self,
+        challenge: Dict[str, Any],
+        existing_solution: str,
+        rejection_reason: str,
+        rejection_category: Optional[str] = None,
+        existing_challenges: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "gap_status": "VALID_GAP",
+            "solution_gap_valid": True,
+            "solution_gap": "Decentralized community-level filtration is genuinely needed due to lack of pipeline infrastructure.",
+            "category": "Water Management & Sanitation",
+            "subcategory": "Water Quality & Treatment",
+            "ai_summary": "Decentralized filtration unit required for remote fluoride-affected villages.",
+            "required_skills": "Water Chemistry, Nanomaterials, Hydrology",
+            "required_technologies": "Spectrophotometry, IoT Water Quality Sensors",
+            "severity": "high",
+            "priority": "high",
+            "innovation_scope": "high",
+            "feasibility": "high",
+            "confidence_score": 0.95,
+            "analysis": "Decentralized community-level filtration is genuinely needed due to lack of pipeline infrastructure.",
+            "llm_calls_made": 2,
+        }
+
+
 # =============================================================================
 # Master Test Suite Definition
 # =============================================================================
@@ -333,7 +406,7 @@ def run_master_e2e_journey():
     client_mock = MockMasterClient(db)
 
     # Initialize Services wired to common DB
-    challenge_svc = ChallengeService(client=client_mock)
+    challenge_svc = ChallengeService(ai_service=MockMasterAIService(), client=client_mock)
     matching_svc = MatchingService(client=client_mock)
     uni_svc = UniversityWorkflowService(client=client_mock)
     proj_svc = ProjectWorkflowService(client=client_mock)

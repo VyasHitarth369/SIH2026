@@ -11,6 +11,7 @@ from app.dependencies.auth import get_current_user, get_current_user_optional
 from app.schemas.analysis import (
     AnalyzeChallengeResponse,
     ExistingSolutionDecisionRequest,
+    DuplicateGateDecisionRequest,
 )
 from app.schemas.challenge import ChallengeCreate, ChallengeResponse
 from app.schemas.project import (
@@ -316,6 +317,45 @@ def handle_existing_solution_response(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process existing solution decision: {str(e)}",
+        )
+
+
+# -----------------------------------------------------------------------------
+# 5a. POST /api/challenges/{challenge_id}/duplicate-response — Citizen Duplicate Gate Decision
+# -----------------------------------------------------------------------------
+@router.post(
+    "/{challenge_id}/duplicate-response",
+    summary="Citizen response to duplicate gate (Support Existing or Claim Different / Explain Gap)",
+)
+def handle_duplicate_response(
+    challenge_id: str,
+    decision: DuplicateGateDecisionRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: ChallengeService = Depends(get_challenge_service),
+):
+    """Processes citizen response to the Citizen Duplicate Gate:
+
+    - 'support_existing': citizen endorses existing challenge, votes for it, and merges submission into duplicate_merged.
+    - 'claim_different': citizen provides gap explanation; executes Call 2 gap validation to verify distinct scope.
+    """
+    try:
+        result = service.handle_duplicate_response(
+            challenge_id=challenge_id,
+            user=current_user,
+            action=decision.action,
+            existing_challenge_id=decision.existing_challenge_id,
+            gap_reason=decision.gap_reason,
+        )
+        return {
+            "success": True,
+            "data": result,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process duplicate gate decision: {str(e)}",
         )
 
 

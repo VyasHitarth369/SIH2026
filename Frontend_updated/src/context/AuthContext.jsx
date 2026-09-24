@@ -45,6 +45,10 @@ export function AuthProvider({ children }) {
 
   // Restore session from Supabase on mount
   useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/demo')) {
+      setIsLoading(false);
+      return;
+    }
     let isMounted = true;
 
     async function restoreSession() {

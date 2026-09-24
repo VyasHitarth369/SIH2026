@@ -6,8 +6,8 @@ import { useToast } from '../context/ToastContext';
 import Trans, { useTranslate } from '../components/shared/Trans.jsx';
 import { VidySetuMark } from '../components/shared/VidySetuLogo.jsx';
 import { supabase } from '../services/supabaseClient';
+import apiClient from '../services/apiClient';
 import { jharkhandCities } from '../data/locations';
-import { STUDENT_APPROVED_UNIVERSITIES } from '../data/orgData';
 import '../styles/auth.css';
 
 const ROLE_HOME = {
@@ -27,23 +27,6 @@ const JHARKHAND_DISTRICTS = [
   'Gumla', 'Simdega', 'Khunti', 'Lohardaga', 'Latehar',
   'Saraikela-Kharsawan', 'Jamtara', 'Godda', 'Sahibganj',
   'Pakur', 'Koderma', 'Garhwa', 'West Singhbhum',
-];
-
-const UNIVERSITIES = [
-  'Vishwakarma Government Engineering College (VGEC)',
-  'Gujarat Technological University (GTU)',
-  'Indian Institute of Technology (IIT)',
-  'National Institute of Technology (NIT)',
-  'Other University',
-];
-
-const COMPANIES = [
-  'Tata Consultancy Services (TCS)',
-  'Infosys',
-  'Wipro',
-  'HCLTech',
-  'Accenture',
-  'Other Company',
 ];
 
 const DOMAINS = [
@@ -95,6 +78,63 @@ export default function LoginPage({ defaultMode = 'login' }) {
   const [rememberMe, setRememberMe] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // Authoritative Database-Backed Universities & Industries for Signup
+  const [universities, setUniversities] = useState([]);
+  const [loadingUnis, setLoadingUnis] = useState(true);
+  const [uniError, setUniError] = useState(null);
+
+  const [industries, setIndustries] = useState([]);
+  const [loadingInds, setLoadingInds] = useState(true);
+  const [indError, setIndError] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadAuthoritativeMetadata() {
+      // 1. Authoritative Universities from DB
+      try {
+        setLoadingUnis(true);
+        setUniError(null);
+        const res = await apiClient.get('/universities');
+        const list = res?.data || res;
+        if (Array.isArray(list) && list.length > 0 && isMounted) {
+          setUniversities(list);
+        } else if (isMounted) {
+          setUniError('Unable to load universities. Please try again.');
+        }
+      } catch (err) {
+        if (isMounted) {
+          setUniError('Unable to load universities. Please try again.');
+        }
+      } finally {
+        if (isMounted) setLoadingUnis(false);
+      }
+
+      // 2. Authoritative Industries from DB
+      try {
+        setLoadingInds(true);
+        setIndError(null);
+        const res = await apiClient.get('/industries');
+        const list = res?.data || res;
+        if (Array.isArray(list) && list.length > 0 && isMounted) {
+          setIndustries(list);
+        } else if (isMounted) {
+          setIndError('Unable to load industries. Please try again.');
+        }
+      } catch (err) {
+        if (isMounted) {
+          setIndError('Unable to load industries. Please try again.');
+        }
+      } finally {
+        if (isMounted) setLoadingInds(false);
+      }
+    }
+
+    loadAuthoritativeMetadata();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Role Selection (Signup metadata only - never authoritative authorization)
   const [selectedRole, setSelectedRole] = useState('citizen');
@@ -262,7 +302,7 @@ export default function LoginPage({ defaultMode = 'login' }) {
         return;
       }
     } else if (selectedRole === 'student') {
-      if (!roleFields.studentUniversity || !STUDENT_APPROVED_UNIVERSITIES.includes(roleFields.studentUniversity)) {
+      if (!roleFields.studentUniversity) {
         showToast(t('Please select an approved university.'));
         setSubmitting(false);
         return;
@@ -294,10 +334,17 @@ export default function LoginPage({ defaultMode = 'login' }) {
       profilePayload.department = roleFields.governmentDept.trim();
       profilePayload.designation = roleFields.governmentDesignation.trim();
     } else if (selectedRole === 'university_admin') {
-      profilePayload.university = roleFields.university;
+      const selectedU = universities.find((u) => u.university_id === roleFields.university || u.university_name === roleFields.university);
+      profilePayload.university_id = selectedU ? selectedU.university_id : roleFields.university;
+      profilePayload.university = selectedU ? selectedU.university_name : roleFields.university;
+      profilePayload.university_name = selectedU ? selectedU.university_name : roleFields.university;
       profilePayload.designation = roleFields.universityDesignation.trim();
     } else if (selectedRole === 'student') {
-      profilePayload.university = roleFields.studentUniversity;
+      const selectedU = universities.find((u) => u.university_id === roleFields.studentUniversity || u.university_name === roleFields.studentUniversity);
+      profilePayload.university_id = selectedU ? selectedU.university_id : roleFields.studentUniversity;
+      profilePayload.university = selectedU ? selectedU.university_name : roleFields.studentUniversity;
+      profilePayload.studentUniversity = selectedU ? selectedU.university_name : roleFields.studentUniversity;
+      profilePayload.university_name = selectedU ? selectedU.university_name : roleFields.studentUniversity;
       profilePayload.department = roleFields.studentDepartment.trim();
       profilePayload.studentId = roleFields.studentId.trim();
       profilePayload.domain = roleFields.studentDomain;
@@ -305,13 +352,20 @@ export default function LoginPage({ defaultMode = 'login' }) {
       if (roleFields.linkedinId) profilePayload.linkedinId = roleFields.linkedinId.trim();
       if (roleFields.githubId) profilePayload.githubId = roleFields.githubId.trim();
     } else if (selectedRole === 'faculty') {
-      profilePayload.university = roleFields.facultyUniversity;
+      const selectedU = universities.find((u) => u.university_id === roleFields.facultyUniversity || u.university_name === roleFields.facultyUniversity);
+      profilePayload.university_id = selectedU ? selectedU.university_id : roleFields.facultyUniversity;
+      profilePayload.university = selectedU ? selectedU.university_name : roleFields.facultyUniversity;
+      profilePayload.facultyUniversity = selectedU ? selectedU.university_name : roleFields.facultyUniversity;
+      profilePayload.university_name = selectedU ? selectedU.university_name : roleFields.facultyUniversity;
       profilePayload.facultyId = roleFields.facultyId.trim();
       profilePayload.researchArea = roleFields.researchArea.trim();
       profilePayload.expertise = roleFields.facultyExpertise.trim();
     } else if (selectedRole === 'industry_employee') {
-      profilePayload.company = roleFields.companyName;
-      profilePayload.companyName = roleFields.companyName;
+      const selectedI = industries.find((i) => i.industry_id === roleFields.companyName || i.industry_name === roleFields.companyName);
+      profilePayload.industry_id = selectedI ? selectedI.industry_id : roleFields.companyName;
+      profilePayload.company = selectedI ? selectedI.industry_name : roleFields.companyName;
+      profilePayload.companyName = selectedI ? selectedI.industry_name : roleFields.companyName;
+      profilePayload.industry_name = selectedI ? selectedI.industry_name : roleFields.companyName;
       profilePayload.companyEmail = roleFields.companyEmail.trim();
       profilePayload.employeeId = roleFields.employeeId.trim();
       profilePayload.designation = roleFields.industryDesignation.trim();
@@ -695,13 +749,25 @@ export default function LoginPage({ defaultMode = 'login' }) {
                           className="form-select"
                           value={roleFields.university}
                           onChange={(e) => handleRoleFieldChange('university', e.target.value)}
+                          disabled={loadingUnis || !!uniError}
                           required
                         >
-                          <option value="">{t("Select University")}</option>
-                          {UNIVERSITIES.map((u) => (
-                            <option key={u} value={u}>{u}</option>
+                          <option value="">
+                            {loadingUnis
+                              ? (lang === 'hi' ? 'विश्वविद्यालय लोड हो रहे हैं...' : 'Loading universities...')
+                              : uniError
+                              ? (lang === 'hi' ? 'विश्वविद्यालय लोड करने में असमर्थ। कृपया पुनः प्रयास करें।' : 'Unable to load universities. Please try again.')
+                              : (lang === 'hi' ? 'विश्वविद्यालय चुनें' : 'Select University')}
+                          </option>
+                          {universities.map((u) => (
+                            <option key={u.university_id} value={u.university_id}>{u.university_name}</option>
                           ))}
                         </select>
+                        {uniError && (
+                          <div style={{ color: '#dc2626', fontSize: 12, marginTop: 4 }}>
+                            {lang === 'hi' ? 'विश्वविद्यालय लोड करने में असमर्थ। कृपया पुनः प्रयास करें।' : 'Unable to load universities. Please try again.'}
+                          </div>
+                        )}
                       </div>
 
                       <div className="form-group">
@@ -727,13 +793,25 @@ export default function LoginPage({ defaultMode = 'login' }) {
                           className="form-select"
                           value={roleFields.studentUniversity}
                           onChange={(e) => handleRoleFieldChange('studentUniversity', e.target.value)}
+                          disabled={loadingUnis || !!uniError}
                           required
                         >
-                          <option value="">{t("Select University")}</option>
-                          {STUDENT_APPROVED_UNIVERSITIES.map((u) => (
-                            <option key={u} value={u}>{u}</option>
+                          <option value="">
+                            {loadingUnis
+                              ? (lang === 'hi' ? 'विश्वविद्यालय लोड हो रहे हैं...' : 'Loading universities...')
+                              : uniError
+                              ? (lang === 'hi' ? 'विश्वविद्यालय लोड करने में असमर्थ। कृपया पुनः प्रयास करें।' : 'Unable to load universities. Please try again.')
+                              : (lang === 'hi' ? 'विश्वविद्यालय चुनें' : 'Select University')}
+                          </option>
+                          {universities.map((u) => (
+                            <option key={u.university_id} value={u.university_id}>{u.university_name}</option>
                           ))}
                         </select>
+                        {uniError && (
+                          <div style={{ color: '#dc2626', fontSize: 12, marginTop: 4 }}>
+                            {lang === 'hi' ? 'विश्वविद्यालय लोड करने में असमर्थ। कृपया पुनः प्रयास करें।' : 'Unable to load universities. Please try again.'}
+                          </div>
+                        )}
                       </div>
 
                       <div className="two-column">
@@ -825,13 +903,25 @@ export default function LoginPage({ defaultMode = 'login' }) {
                           className="form-select"
                           value={roleFields.facultyUniversity}
                           onChange={(e) => handleRoleFieldChange('facultyUniversity', e.target.value)}
+                          disabled={loadingUnis || !!uniError}
                           required
                         >
-                          <option value="">{t("Select University")}</option>
-                          {UNIVERSITIES.map((u) => (
-                            <option key={u} value={u}>{u}</option>
+                          <option value="">
+                            {loadingUnis
+                              ? (lang === 'hi' ? 'विश्वविद्यालय लोड हो रहे हैं...' : 'Loading universities...')
+                              : uniError
+                              ? (lang === 'hi' ? 'विश्वविद्यालय लोड करने में असमर्थ। कृपया पुनः प्रयास करें।' : 'Unable to load universities. Please try again.')
+                              : (lang === 'hi' ? 'विश्वविद्यालय चुनें' : 'Select University')}
+                          </option>
+                          {universities.map((u) => (
+                            <option key={u.university_id} value={u.university_id}>{u.university_name}</option>
                           ))}
                         </select>
+                        {uniError && (
+                          <div style={{ color: '#dc2626', fontSize: 12, marginTop: 4 }}>
+                            {lang === 'hi' ? 'विश्वविद्यालय लोड करने में असमर्थ। कृपया पुनः प्रयास करें।' : 'Unable to load universities. Please try again.'}
+                          </div>
+                        )}
                       </div>
 
                       <div className="two-column">
@@ -883,13 +973,25 @@ export default function LoginPage({ defaultMode = 'login' }) {
                           className="form-select"
                           value={roleFields.companyName}
                           onChange={(e) => handleRoleFieldChange('companyName', e.target.value)}
+                          disabled={loadingInds || !!indError}
                           required
                         >
-                          <option value="">{t("Select Company")}</option>
-                          {COMPANIES.map((c) => (
-                            <option key={c} value={c}>{c}</option>
+                          <option value="">
+                            {loadingInds
+                              ? (lang === 'hi' ? 'कंपनियां लोड हो रही हैं...' : 'Loading companies...')
+                              : indError
+                              ? (lang === 'hi' ? 'कंपनियां लोड करने में असमर्थ। कृपया पुनः प्रयास करें।' : 'Unable to load companies. Please try again.')
+                              : (lang === 'hi' ? 'कंपनी चुनें' : 'Select Company')}
+                          </option>
+                          {industries.map((ind) => (
+                            <option key={ind.industry_id} value={ind.industry_id}>{ind.industry_name}</option>
                           ))}
                         </select>
+                        {indError && (
+                          <div style={{ color: '#dc2626', fontSize: 12, marginTop: 4 }}>
+                            {lang === 'hi' ? 'कंपनियां लोड करने में असमर्थ। कृपया पुनः प्रयास करें।' : 'Unable to load companies. Please try again.'}
+                          </div>
+                        )}
                       </div>
 
                       <div className="two-column">

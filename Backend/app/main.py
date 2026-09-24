@@ -78,3 +78,8 @@ app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(milestones_router)
 app.include_router(government_router)
+
+# Direct aliases for registration & profile dropdowns
+from app.routes.auth import list_universities, list_industries
+app.add_api_route("/api/universities", list_universities, methods=["GET"], tags=["Metadata"])
+app.add_api_route("/api/industries", list_industries, methods=["GET"], tags=["Metadata"])

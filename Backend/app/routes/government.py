@@ -69,23 +69,30 @@ def get_government_analytics(
     summary="List monitored problem statements with AI review and execution status",
 )
 def get_monitored_problems(
+    category: Optional[str] = Query(None, description="Category filter: pending, allocated, rejected, solved, or all"),
     status_filter: Optional[str] = Query(None, alias="status", description="Filter by challenge status"),
     district: Optional[str] = Query(None, description="Filter by district"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(100, ge=1, le=500),
     current_user: AuthenticatedUser = Depends(require_government_officer()),
     service: GovernmentService = Depends(get_government_service),
 ):
     """Retrieves challenges with hydrated AI analysis and project execution progress."""
     try:
-        data = service.get_monitored_problems(
+        problems = service.get_monitored_problems(
+            category=category,
             status_filter=status_filter,
             district=district,
+            page=page,
             limit=limit,
         )
         return {
             "success": True,
-            "total": len(data),
-            "data": data,
+            "counts": getattr(problems, "counts", {}),
+            "total": getattr(problems, "total", len(problems)),
+            "page": getattr(problems, "page", page),
+            "limit": getattr(problems, "limit", limit),
+            "data": list(problems),
         }
     except HTTPException:
         raise

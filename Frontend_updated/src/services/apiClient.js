@@ -96,6 +96,43 @@ export const apiClient = {
       return null;
     }
   },
+
+  downloadBlob: async (endpoint, defaultFilename = 'document.pdf') => {
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}${cleanEndpoint}`;
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers = {};
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      let msg = 'Failed to download file';
+      try {
+        const errJson = await res.json();
+        if (errJson.detail) msg = errJson.detail;
+      } catch {
+        // ignore
+      }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    let saveName = defaultFilename;
+    const cd = res.headers.get('content-disposition');
+    if (cd && cd.includes('filename=')) {
+      const match = cd.match(/filename=["']?([^"';]+)["']?/);
+      if (match && match[1]) saveName = match[1].trim();
+    }
+    const objectUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = saveName;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(objectUrl);
+    document.body.removeChild(a);
+    return saveName;
+  },
 };
 
 export default apiClient;

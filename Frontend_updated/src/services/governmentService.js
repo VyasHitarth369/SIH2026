@@ -9,9 +9,26 @@ export const governmentService = {
     return res?.data || res;
   },
 
-  async fetchGovernmentProblems(status = null, district = null) {
-    const res = await apiClient.get('/government/problems', { status, district });
-    return res?.data || [];
+  async fetchGovernmentProblems(options = {}) {
+    let params = {};
+    if (typeof options === 'string') {
+      const categoryOrStatus = options;
+      const district = arguments[1] || null;
+      if (['pending', 'allocated', 'rejected', 'solved', 'all'].includes(categoryOrStatus)) {
+        params.category = categoryOrStatus;
+      } else if (categoryOrStatus) {
+        params.status = categoryOrStatus;
+      }
+      if (district) params.district = district;
+    } else if (typeof options === 'object' && options !== null) {
+      if (options.category) params.category = options.category;
+      if (options.status) params.status = options.status;
+      if (options.district) params.district = options.district;
+      if (options.page) params.page = options.page;
+      if (options.limit) params.limit = options.limit;
+    }
+    const res = await apiClient.get('/government/problems', params);
+    return res;
   },
 
   async fetchSolvedProjects() {

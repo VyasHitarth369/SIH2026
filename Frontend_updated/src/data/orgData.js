@@ -11,8 +11,6 @@ export const universities = [
   { id: 'bau-ranchi', name: 'BAU Ranchi', city: 'Ranchi' },
 ];
 
-export const universityNames = universities.map((u) => u.name);
-
 // Exactly 15 approved universities for Student registration and profile
 export const STUDENT_APPROVED_UNIVERSITIES = [
   'Birla Institute of Technology (BIT Mesra)',
@@ -31,6 +29,8 @@ export const STUDENT_APPROVED_UNIVERSITIES = [
   "Jamshedpur Women's University",
   'Jharkhand University of Technology (JUT)',
 ];
+
+export const universityNames = STUDENT_APPROVED_UNIVERSITIES;
 
 export const industries = [
   { id: 'tata-csr', name: 'Tata CSR Water Solutions', domain: 'IoT' },

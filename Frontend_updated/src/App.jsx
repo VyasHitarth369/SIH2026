@@ -9,6 +9,8 @@ import AllProblemsPage from './pages/citizen/AllProblemsPage';
 import AddProblemPage from './pages/citizen/AddProblemPage';
 import GlobalSearchPage from './pages/citizen/GlobalSearchPage';
 import ProblemValidationPage from './pages/citizen/ProblemValidationPage';
+import DemoDashboardLayout from './components/layout/DemoDashboardLayout';
+import DemoProblemSolutionsPage from './pages/demo/DemoProblemSolutionsPage';
 
 import StudentProjectsPage from './pages/student/ProjectsPage';
 import StudentUniversityProblemsPage from './pages/student/UniversityProblemsPage';
@@ -71,6 +73,11 @@ export default function App() {
       <Route element={<ProtectedRoute allowRoles={['citizen']}><DashboardLayout /></ProtectedRoute>}>
         <Route path="/global-search" element={<GlobalSearchPage />} />
         <Route path="/problem-validation" element={<ProblemValidationPage />} />
+      </Route>
+
+      {/* Deterministic Demo Flow Route (Fixed Problem Statements & Visual Clone) */}
+      <Route element={<DemoDashboardLayout />}>
+        <Route path="/demo/problem-solutions" element={<DemoProblemSolutionsPage />} />
       </Route>
 
       {/* Student */}

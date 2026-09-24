@@ -674,18 +674,34 @@ class ProjectWorkflowService:
             "Solution Deployed": 100,
         }
 
-        # 5. Persist milestone in project_milestones
-        m_rec = {
-            "project_id": project_id,
-            "milestone_name": norm_target,
-            "status": "completed",
-            "completion_percentage": pct_map.get(norm_target, 100),
-            "created_at": now_ts,
-        }
-        try:
-            self.client.table("project_milestones").insert(m_rec).execute()
-        except Exception:
-            pass
+        # 5. Persist all milestones up to target_idx in project_milestones table
+        # Updates existing rows if present, or inserts if missing.
+        for idx in range(target_idx + 1):
+            stage_name = self.STANDARDIZED_MILESTONES[idx]
+            stage_pct = 100 if idx < target_idx else pct_map.get(stage_name, 100)
+            try:
+                check_res = (
+                    self.client.table("project_milestones")
+                    .select("milestone_id")
+                    .eq("project_id", project_id)
+                    .eq("milestone_name", stage_name)
+                    .execute()
+                )
+                if check_res.data and len(check_res.data) > 0:
+                    self.client.table("project_milestones").update({
+                        "status": "completed",
+                        "completion_percentage": stage_pct,
+                    }).eq("project_id", project_id).eq("milestone_name", stage_name).execute()
+                else:
+                    self.client.table("project_milestones").insert({
+                        "project_id": project_id,
+                        "milestone_name": stage_name,
+                        "status": "completed",
+                        "completion_percentage": stage_pct,
+                        "created_at": now_ts,
+                    }).execute()
+            except Exception:
+                pass
 
         # 6. Update project status and linked challenge
         proj_updates = {}
@@ -699,8 +715,14 @@ class ProjectWorkflowService:
                 except Exception:
                     pass
         elif norm_target in ["Development In Progress", "Student Team Formed"]:
-            if project.get("status") == "proposed":
+            if project.get("status") in ["proposed", None]:
                 proj_updates["status"] = "active"
+            cid = project.get("challenge_id")
+            if cid:
+                try:
+                    self.client.table("challenges").update({"status": "in_project"}).eq("challenge_id", cid).execute()
+                except Exception:
+                    pass
 
         if proj_updates:
             try:
@@ -855,10 +877,18 @@ class ProjectWorkflowService:
                 if user_uni_id:
                     query = query.eq("university_id", user_uni_id)
 
-        elif user and user.role == "industry_employee":
+        elif user and user.role in ["industry_employee", "industry"]:
             emp_rec = user.stakeholder or {}
             emp_id = emp_rec.get("employee_id")
             emp_ind = emp_rec.get("industry_id")
+            if not emp_ind and user.user_id:
+                try:
+                    emp_row = self.client.table("industry_employees").select("industry_id, employee_id").eq("user_id", user.user_id).execute()
+                    if emp_row.data:
+                        emp_ind = emp_ind or emp_row.data[0].get("industry_id")
+                        emp_id = emp_id or emp_row.data[0].get("employee_id")
+                except Exception:
+                    pass
 
             if my_projects:
                 if not emp_id:
@@ -890,7 +920,11 @@ class ProjectWorkflowService:
         if challenge_id:
             query = query.eq("challenge_id", challenge_id)
         if status_filter:
-            query = query.eq("status", status_filter)
+            if "," in status_filter:
+                statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+                query = query.in_("status", statuses)
+            else:
+                query = query.eq("status", status_filter)
 
         query = query.order("created_at", desc=True).limit(limit)
 

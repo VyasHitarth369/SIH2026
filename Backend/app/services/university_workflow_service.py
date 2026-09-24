@@ -15,6 +15,7 @@ from fastapi import HTTPException, status
 
 from app.database import get_supabase
 from app.services.auth_service import AuthenticatedUser
+from app.utils.storage_utils import resolve_document_signed_url
 
 _selection_lock = threading.Lock()
 
@@ -475,7 +476,7 @@ class UniversityWorkflowService:
         status_filter: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Lists projects with optional filtering."""
+        """Lists projects with optional filtering, hydrating institutional details and evidence."""
         query = self.client.table("projects").select("*")
         if university_id:
             query = query.eq("university_id", university_id)
@@ -489,7 +490,60 @@ class UniversityWorkflowService:
         query = query.order("created_at", desc=True).limit(limit)
         try:
             res = query.execute()
-            return res.data or []
+            projects = res.data or []
+            if not projects:
+                return []
+
+            # Batch hydrate universities, industries, challenges, and milestone evidence
+            u_ids = list({p.get("university_id") for p in projects if p.get("university_id")})
+            i_ids = list({p.get("industry_id") for p in projects if p.get("industry_id")})
+            c_ids = list({p.get("challenge_id") for p in projects if p.get("challenge_id")})
+            p_ids = [p.get("project_id") for p in projects if p.get("project_id")]
+
+            u_map = {}
+            if u_ids:
+                try:
+                    u_res = self.client.table("universities").select("university_id, university_name").in_("university_id", u_ids).execute()
+                    u_map = {row["university_id"]: row.get("university_name") for row in (u_res.data or [])}
+                except Exception:
+                    pass
+
+            i_map = {}
+            if i_ids:
+                try:
+                    i_res = self.client.table("industries").select("industry_id, industry_name").in_("industry_id", i_ids).execute()
+                    i_map = {row["industry_id"]: row.get("industry_name") for row in (i_res.data or [])}
+                except Exception:
+                    pass
+
+            c_map = {}
+            if c_ids:
+                try:
+                    c_res = self.client.table("challenges").select("challenge_id, title, description, location").in_("challenge_id", c_ids).execute()
+                    c_map = {row["challenge_id"]: row for row in (c_res.data or [])}
+                except Exception:
+                    pass
+
+            ev_map = {}
+            if p_ids:
+                try:
+                    m_res = self.client.table("project_milestones").select("project_id, evidence_url").in_("project_id", p_ids).execute()
+                    for m in (m_res.data or []):
+                        if m.get("evidence_url") and m.get("project_id") not in ev_map:
+                            ev_map[m["project_id"]] = m.get("evidence_url")
+                except Exception:
+                    pass
+
+            for p in projects:
+                p["university_name"] = u_map.get(p.get("university_id")) or p.get("university_id")
+                if p.get("industry_id"):
+                    p["industry_name"] = i_map.get(p.get("industry_id")) or p.get("industry_id")
+                ch = c_map.get(p.get("challenge_id")) or {}
+                p["challenge_title"] = ch.get("title")
+                p["challenge_description"] = ch.get("description")
+                p["evidence_url"] = ev_map.get(p.get("project_id"))
+
+            return projects
         except Exception:
             return []
 
@@ -556,6 +610,8 @@ class UniversityWorkflowService:
                     return res.data[0]
             except Exception:
                 pass
+        if getattr(user, "profile", None) and user.profile.get("university_id"):
+            return {"university_id": user.profile.get("university_id")}
         return None
 
     def _verify_admin_for_university(self, user: AuthenticatedUser, university_id: str):
@@ -621,10 +677,20 @@ class UniversityWorkflowService:
         except Exception:
             matches = []
 
+        # Pre-fetch all universities into lookup map
+        unis_map = {}
+        try:
+            u_res = self.client.table("universities").select("university_id, university_name").execute()
+            for u in (u_res.data or []):
+                unis_map[u["university_id"]] = u.get("university_name") or u["university_id"]
+        except Exception:
+            pass
+
         hydrated = []
         for match in matches:
             ch_id = match.get("challenge_id")
             item = dict(match)
+            item["university_name"] = unis_map.get(university_id) or university_id
             try:
                 ch_res = self.client.table("challenges").select("*").eq("challenge_id", ch_id).execute()
                 challenge = ch_res.data[0] if ch_res.data else None
@@ -635,6 +701,43 @@ class UniversityWorkflowService:
             except Exception:
                 item["challenge"] = None
                 item["ai_analysis"] = None
+
+            # Hydrate all Top-5 ranked matches for this challenge
+            try:
+                all_m_res = (
+                    self.client.table("challenge_university_matches")
+                    .select("*")
+                    .eq("challenge_id", ch_id)
+                    .order("rank", desc=False)
+                    .execute()
+                )
+                all_matches = all_m_res.data or []
+                for m in all_matches:
+                    m["university_name"] = unis_map.get(m.get("university_id")) or m.get("university_id")
+                item["all_matches"] = all_matches
+            except Exception:
+                item["all_matches"] = [item]
+
+            # Hydrate associated project if created
+            try:
+                p_res = self.client.table("projects").select("*").eq("challenge_id", ch_id).execute()
+                if p_res and p_res.data:
+                    proj = p_res.data[0]
+                    # If faculty assigned, hydrate faculty name
+                    if proj.get("faculty_id"):
+                        try:
+                            f_res = self.client.table("faculty").select("faculty_name, email").eq("faculty_id", proj["faculty_id"]).execute()
+                            if f_res and f_res.data:
+                                proj["faculty_name"] = f_res.data[0].get("faculty_name")
+                                proj["faculty_email"] = f_res.data[0].get("email")
+                        except Exception:
+                            pass
+                    item["project"] = proj
+                else:
+                    item["project"] = None
+            except Exception:
+                item["project"] = None
+
             hydrated.append(item)
 
         return hydrated
@@ -911,11 +1014,29 @@ class UniversityWorkflowService:
                 try:
                     ch_res = self.client.table("challenges").select("title, document").eq("challenge_id", p["challenge_id"]).execute()
                     if ch_res.data:
-                        ch_doc = ch_res.data[0].get("document")
+                        raw_doc = ch_res.data[0].get("document")
+                        if raw_doc and str(raw_doc).strip() not in ["", "-", "None", "null"]:
+                            ch_doc = str(raw_doc).strip()
+                except Exception:
+                    pass
+
+            # Check if an MOU URL is stored in challenge_industry_matches.response_note
+            if not ch_doc and p.get("challenge_id"):
+                try:
+                    cim_res = self.client.table("challenge_industry_matches").select("response_note").eq("challenge_id", p["challenge_id"]).execute()
+                    for r in (cim_res.data or []):
+                        note = r.get("response_note") or ""
+                        if "MOU_URL:" in note:
+                            ch_doc = note.split("MOU_URL:")[-1].strip()
+                            break
+                        elif note.startswith("http://") or note.startswith("https://"):
+                            ch_doc = note.strip()
+                            break
                 except Exception:
                     pass
 
             pid = p.get("project_id")
+            has_doc = bool(ch_doc and str(ch_doc).strip() not in ["", "-", "None", "null"])
             mous.append({
                 "mou_id": f"MOU-{uni_id}-{ind_id}-{pid}",
                 "project_id": pid,
@@ -927,11 +1048,28 @@ class UniversityWorkflowService:
                 "government_partner": "Government of Jharkhand — Department of Higher & Technical Education",
                 "status": "Active Collaboration",
                 "effective_date": p.get("start_date") or p.get("created_at", "")[:10],
-                "document_url": ch_doc,
-                "has_document": bool(ch_doc),
+                "document_url": resolve_document_signed_url(ch_doc) if has_doc else None,
+                "has_document": has_doc,
             })
 
         return mous
+
+    def _get_project_or_404(self, project_id: str) -> Dict[str, Any]:
+        try:
+            res = self.client.table("projects").select("*").eq("project_id", project_id).execute()
+            if not res.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Project '{project_id}' not found",
+                )
+            return res.data[0]
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project '{project_id}' not found",
+            )
 
     def _get_challenge_or_404(self, challenge_id: str) -> Dict[str, Any]:
         try:
@@ -969,6 +1107,114 @@ class UniversityWorkflowService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Match record between challenge '{challenge_id}' and university '{university_id}' does not exist.",
             )
+
+    def upload_project_mou(
+        self,
+        project_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+        user: AuthenticatedUser,
+    ) -> Dict[str, Any]:
+        """Uploads an official signed MOU document to Supabase Storage ('documents' bucket)
+        and persists the reference to DB.
+        """
+        import os
+        import uuid
+
+        project = self.get_project(project_id)
+        uni_id = project.get("university_id")
+        ind_id = project.get("industry_id")
+        cid = project.get("challenge_id")
+
+        # Authorization
+        if user.role == "university_admin":
+            admin_rec = self._resolve_university_admin_record(user)
+            admin_uni = (admin_rec or {}).get("university_id")
+            if not admin_uni or admin_uni != uni_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access forbidden: You cannot upload an MOU for university '{uni_id}'.",
+                )
+        elif user.role in ["industry_employee", "industry"]:
+            if not user.approval_authority:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: Only verified Industry SPOCs with approval authority can upload MOUs.",
+                )
+            emp_ind = getattr(user, "stakeholder", {}).get("industry_id") if getattr(user, "stakeholder", None) else None
+            if not emp_ind and getattr(user, "profile", None):
+                emp_ind = user.profile.get("industry_id")
+            if ind_id and emp_ind and emp_ind != ind_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access forbidden: You cannot upload an MOU for industry '{ind_id}'.",
+                )
+        elif user.role != "government":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Role '{user.role}' is not authorized to upload project MOUs.",
+            )
+
+        # File validation
+        allowed_exts = {".pdf", ".docx", ".doc", ".png", ".jpg", ".jpeg"}
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in allowed_exts:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file format '{ext}'. Allowed formats: PDF, DOCX, DOC, PNG, JPG, JPEG.",
+            )
+
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File size exceeds 10 MB limit ({round(len(content) / (1024 * 1024), 2)} MB).",
+            )
+
+        # Upload to Supabase Storage (Private bucket)
+        try:
+            self.client.storage.create_bucket("documents", options={"public": False})
+        except Exception:
+            pass
+
+        safe_filename = f"MOU_{uuid.uuid4().hex[:8]}_{filename.replace(' ', '_')}"
+        storage_path = f"mous/{project_id}/{safe_filename}"
+        mime = content_type or ("application/pdf" if ext == ".pdf" else "application/octet-stream")
+
+        try:
+            self.client.storage.from_("documents").upload(
+                path=storage_path,
+                file=content,
+                file_options={"content-type": mime, "upsert": "true"},
+            )
+            doc_url = resolve_document_signed_url(storage_path) or storage_path
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to upload document to storage: {str(e)}",
+            )
+
+        # Persist document URL in DB
+        if cid:
+            try:
+                self.client.table("challenges").update({"document": doc_url}).eq("challenge_id", cid).execute()
+            except Exception:
+                pass
+            try:
+                self.client.table("challenge_industry_matches").update({"response_note": f"MOU_URL:{doc_url}"}).eq("challenge_id", cid).execute()
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "project_id": project_id,
+            "document_url": doc_url,
+            "storage_path": storage_path,
+            "filename": filename,
+            "size_bytes": len(content),
+            "content_type": mime,
+            "uploaded_by": user.email or str(user.user_id),
+        }
 
     def _get_faculty_or_404(self, faculty_id: str) -> Dict[str, Any]:
         try:

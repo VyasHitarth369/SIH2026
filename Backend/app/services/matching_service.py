@@ -12,7 +12,11 @@ from fastapi import HTTPException, status
 
 from app.database import get_supabase
 from app.services.auth_service import AuthenticatedUser
-from app.services.matching_engine import rank_universities, rank_industries
+from app.services.matching_engine import (
+    rank_universities,
+    rank_industries,
+    score_university_candidate,
+)
 
 
 class MatchingService:
@@ -29,17 +33,96 @@ class MatchingService:
     # -------------------------------------------------------------------------
     # University Matching
     # -------------------------------------------------------------------------
+    def _fetch_university_workloads(self) -> Dict[str, int]:
+        """Calculates active project/challenge workloads for all universities from DB tables.
+
+        Statuses counted as active:
+        - projects: 'proposed', 'active', 'in_progress', 'prototype', 'pilot'
+        - challenge_university_matches: 'accepted', 'selected'
+        Prevents double-counting by tracking distinct active challenge_ids per university.
+        """
+        counts: Dict[str, set] = {}
+        try:
+            active_proj_statuses = ["proposed", "active", "in_progress", "prototype", "pilot"]
+            p_res = (
+                self.client.table("projects")
+                .select("university_id, challenge_id, status")
+                .in_("status", active_proj_statuses)
+                .execute()
+            )
+            for row in (p_res.data or []):
+                uid = row.get("university_id")
+                cid = row.get("challenge_id")
+                if uid and cid:
+                    counts.setdefault(uid, set()).add(cid)
+        except Exception:
+            pass
+
+        try:
+            m_res = (
+                self.client.table("challenge_university_matches")
+                .select("university_id, challenge_id, status")
+                .in_("status", ["accepted", "selected"])
+                .execute()
+            )
+            for row in (m_res.data or []):
+                uid = row.get("university_id")
+                cid = row.get("challenge_id")
+                if uid and cid:
+                    counts.setdefault(uid, set()).add(cid)
+        except Exception:
+            pass
+
+        return {uid: len(cids) for uid, cids in counts.items()}
+
+    def _hydrate_university_matches(
+        self,
+        matches: List[Dict[str, Any]],
+        challenge: Dict[str, Any],
+        analysis: Dict[str, Any],
+        workloads: Dict[str, int],
+    ) -> List[Dict[str, Any]]:
+        """Hydrates persisted match records with university names, active workloads, and matched capabilities."""
+        unis_by_id = {u["university_id"]: u for u in self._fetch_universities()}
+        min_workload = min(workloads.values()) if workloads else 0
+
+        hydrated = []
+        for m in matches:
+            uid = m.get("university_id")
+            uni = unis_by_id.get(uid, {})
+            active_proj = workloads.get(uid, 0)
+            workload_advantage = (active_proj - min_workload == 0) and any(w - active_proj >= 3 for w in workloads.values())
+
+            # Extract capability tokens from university record
+            _, breakdown, _ = score_university_candidate(challenge, analysis, uni) if uni else (0, {}, "")
+
+            item = dict(m)
+            item.update({
+                "university_name": uni.get("university_name") or uni.get("name") or uid,
+                "city": uni.get("city"),
+                "district": uni.get("district"),
+                "institution_type": uni.get("institution_type") or "University",
+                "active_projects": active_proj,
+                "active_project_count": active_proj,
+                "matched_skills": breakdown.get("matched_skills", []),
+                "matched_technologies": breakdown.get("matched_technologies", []),
+                "matched_domains": breakdown.get("matched_domains", []),
+                "workload_advantage_applied": workload_advantage,
+            })
+            hydrated.append(item)
+        return hydrated
+
     def get_or_generate_university_matches(
         self,
         challenge_id: str,
-        user: AuthenticatedUser,
+        user: Optional[AuthenticatedUser] = None,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """Retrieves persisted university matches or deterministically generates, ranks,
-
         and persists them if not already computed.
         """
         challenge, analysis = self._validate_challenge_and_analysis(challenge_id, user)
+        workloads = self._fetch_university_workloads()
 
         # 1. Check if matches already exist in database (prevent duplicates)
         try:
@@ -52,7 +135,8 @@ class MatchingService:
             )
             if existing_res.data and len(existing_res.data) > 0:
                 meaningful_existing = [m for m in existing_res.data if m.get("match_score", 0) > 0]
-                return meaningful_existing[:limit]
+                if meaningful_existing:
+                    return self._hydrate_university_matches(meaningful_existing[:limit], challenge, analysis, workloads)
         except Exception:
             pass
 
@@ -61,8 +145,8 @@ class MatchingService:
         if not universities:
             return []
 
-        # 3. Deterministically score and rank candidates
-        ranked = rank_universities(challenge, analysis, universities)
+        # 3. Deterministically score and rank candidates with workload balancing
+        ranked = rank_universities(challenge, analysis, universities, workloads=workloads)
         meaningful_matches = [m for m in ranked if m.get("match_score", 0) > 0]
         top_matches = meaningful_matches[:limit]
 
@@ -85,9 +169,13 @@ class MatchingService:
                     .upsert(row, on_conflict="challenge_id,university_id")
                     .execute()
                 )
-                persisted_rows.append(res.data[0] if res.data else row)
+                db_row = res.data[0] if res.data else row
             except Exception:
-                persisted_rows.append(row)
+                db_row = row
+
+            merged = dict(match)
+            merged.update(db_row)
+            persisted_rows.append(merged)
 
         return persisted_rows
 
@@ -97,7 +185,7 @@ class MatchingService:
     def get_or_generate_industry_matches(
         self,
         challenge_id: str,
-        user: AuthenticatedUser,
+        user: Optional[AuthenticatedUser] = None,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """Retrieves persisted industry matches or deterministically generates, ranks,
@@ -158,7 +246,7 @@ class MatchingService:
     # Internal Validation & Fetch Helpers
     # -------------------------------------------------------------------------
     def _validate_challenge_and_analysis(
-        self, challenge_id: str, user: AuthenticatedUser
+        self, challenge_id: str, user: Optional[AuthenticatedUser] = None
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Ensures challenge exists, user is authorized, and ai_analysis prerequisites are met."""
         # 1. Fetch challenge

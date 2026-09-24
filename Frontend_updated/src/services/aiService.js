@@ -35,6 +35,25 @@ export const aiService = {
     const res = await apiClient.post(`/challenges/${challengeId}/existing-solution-response`, payload);
     return res?.data || res;
   },
+
+  /**
+   * Responds to Citizen Duplicate Gate:
+   * Support existing challenge or explain distinct gap (triggers Call 2).
+   * @param {string} challengeId
+   * @param {'support_existing' | 'claim_different'} action
+   * @param {string} [existingChallengeId]
+   * @param {string} [gapReason]
+   * @returns {Promise<object>}
+   */
+  async respondToDuplicate(challengeId, action, existingChallengeId = null, gapReason = '') {
+    const payload = {
+      action,
+      existing_challenge_id: existingChallengeId,
+      gap_reason: gapReason,
+    };
+    const res = await apiClient.post(`/challenges/${challengeId}/duplicate-response`, payload);
+    return res?.data || res;
+  },
 };
 
 export default aiService;

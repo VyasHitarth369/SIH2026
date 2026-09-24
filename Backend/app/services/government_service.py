@@ -12,6 +12,64 @@ from fastapi import HTTPException, status
 from app.database import get_supabase
 from app.services.auth_service import AuthenticatedUser
 from app.services.matching_service import MatchingService
+from app.utils.storage_utils import resolve_document_signed_url
+
+# Authoritative database status mappings for Government problem categories
+GOVERNMENT_CATEGORY_STATUSES: Dict[str, List[str]] = {
+    "pending": [
+        "submitted",
+        "validated",
+        "pending",
+        "under_review",
+        "existing_solution_found",
+        "ineligible_gap",
+    ],
+    "allocated": [
+        "routed",
+        "university_selected",
+        "project_created",
+        "in_project",
+        "active",
+        "prototype",
+        "pilot",
+    ],
+    "rejected": [
+        "rejected",
+        "no_university_assigned",
+    ],
+    "solved": [
+        "resolved",
+        "solved",
+        "completed",
+        "accepted_existing_solution",
+        "deployed",
+    ],
+}
+
+ALL_MONITORED_STATUSES: List[str] = [
+    status
+    for statuses in GOVERNMENT_CATEGORY_STATUSES.values()
+    for status in statuses
+]
+
+
+class MonitoredProblemList(list):
+    """Subclass of list that behaves as a standard list for existing test suites
+    and callers while also carrying dynamic category counts, total records, and pagination metadata.
+    """
+    def __init__(
+        self,
+        items: List[Dict[str, Any]],
+        counts: Optional[Dict[str, int]] = None,
+        total: Optional[int] = None,
+        page: int = 1,
+        limit: int = 50,
+    ):
+        super().__init__(items)
+        self.counts = counts or {}
+        self.total = total if total is not None else len(items)
+        self.page = page
+        self.limit = limit
 
 
 class GovernmentService:
@@ -230,48 +288,237 @@ class GovernmentService:
         }
 
     # -------------------------------------------------------------------------
-    # 2. Monitored Problems List
+    # 2. Category Counts & Monitored Problems List (Batched & Filtered)
     # -------------------------------------------------------------------------
+    def get_category_counts(self, district: Optional[str] = None) -> Dict[str, int]:
+        """Calculates dynamic counts for all government problem categories derived directly from DB."""
+        counts = {
+            "all": 0,
+            "pending": 0,
+            "allocated": 0,
+            "rejected": 0,
+            "solved": 0,
+        }
+        try:
+            query = self.client.table("challenges").select("challenge_id, status")
+            if district:
+                query = query.eq("district", district)
+            res = query.execute()
+            for row in (res.data or []):
+                st = row.get("status")
+                if not st:
+                    continue
+                matched = False
+                for cat, statuses in GOVERNMENT_CATEGORY_STATUSES.items():
+                    if st in statuses:
+                        counts[cat] += 1
+                        matched = True
+                        break
+                if matched:
+                    counts["all"] += 1
+        except Exception:
+            pass
+        return counts
+
     def get_monitored_problems(
         self,
+        category: Optional[str] = None,
         status_filter: Optional[str] = None,
         district: Optional[str] = None,
+        page: int = 1,
         limit: int = 100,
-    ) -> List[Dict[str, Any]]:
-        """Retrieves challenges with hydrated AI analysis and project execution details."""
+    ) -> MonitoredProblemList:
+        """Retrieves challenges with batched hydration of AI analysis and project execution details.
+
+        Eliminates sequential N+1 database queries:
+        - Batches AI analysis, projects, milestones, matches, and rejections.
+        - Derives counts directly from Supabase.
+        - Strictly isolates categories so every challenge belongs to exactly one category.
+        - Returns a MonitoredProblemList that functions as a list and provides .counts, .total, .page, .limit.
+        """
+        counts = self.get_category_counts(district=district)
+
         query = self.client.table("challenges").select("*")
-        if status_filter:
-            query = query.eq("status", status_filter)
         if district:
             query = query.eq("district", district)
 
+        # Status filtering logic
+        cat_key = category.strip().lower() if category else None
+        if cat_key in ["active", "in_progress", "in-flight"]:
+            cat_key = "allocated"
+        elif cat_key in ["completed", "resolved"]:
+            cat_key = "solved"
+
+        if status_filter:
+            query = query.eq("status", status_filter)
+            total_matching = None
+        elif cat_key and cat_key in GOVERNMENT_CATEGORY_STATUSES:
+            target_statuses = GOVERNMENT_CATEGORY_STATUSES[cat_key]
+            query = query.in_("status", target_statuses)
+            total_matching = counts.get(cat_key, 0)
+        else:
+            # "all" category: strictly include only challenges with recognized monitored statuses
+            query = query.in_("status", ALL_MONITORED_STATUSES)
+            total_matching = counts.get("all", 0)
+
+        # Apply pagination (1-indexed page)
+        page = max(1, page)
+        limit = max(1, min(limit, 200))
+        offset = (page - 1) * limit
+
         try:
-            res = query.order("created_at", desc=True).limit(limit).execute()
+            res = (
+                query.order("created_at", desc=True)
+                .range(offset, offset + limit - 1)
+                .execute()
+            )
             challenges = res.data or []
         except Exception:
             challenges = []
 
+        if total_matching is None:
+            total_matching = len(challenges)
+
+        if not challenges:
+            return MonitoredProblemList(
+                [],
+                counts=counts,
+                total=total_matching,
+                page=page,
+                limit=limit,
+            )
+
+        cids = [ch["challenge_id"] for ch in challenges]
+
+        # 1. Batch AI Analysis
+        ai_by_cid = {}
+        try:
+            ai_res = self.client.table("ai_analysis").select("*").in_("challenge_id", cids).execute()
+            for r in (ai_res.data or []):
+                ai_by_cid[r["challenge_id"]] = r
+        except Exception:
+            pass
+
+        # 2. Batch Projects
+        proj_by_cid = {}
+        pids = []
+        try:
+            p_res = self.client.table("projects").select("*").in_("challenge_id", cids).execute()
+            for r in (p_res.data or []):
+                proj_by_cid[r["challenge_id"]] = r
+                if r.get("project_id"):
+                    pids.append(r["project_id"])
+        except Exception:
+            pass
+
+        # 3. Batch Milestones
+        milestone_pcts_by_pid = {}
+        highest_milestone_by_pid = {}
+        standard_stages = [
+            "Problem Submitted",
+            "Routed to Universities",
+            "University Allocated",
+            "Faculty Assigned",
+            "Student Team Formed",
+            "Development In Progress",
+            "Solution Deployed",
+        ]
+        if pids:
+            try:
+                m_res = (
+                    self.client.table("project_milestones")
+                    .select("project_id, milestone_name, status, completion_percentage")
+                    .in_("project_id", pids)
+                    .execute()
+                )
+                for r in (m_res.data or []):
+                    pid = r.get("project_id")
+                    if pid:
+                        milestone_pcts_by_pid.setdefault(pid, []).append(r.get("completion_percentage", 0))
+                        m_name = (r.get("milestone_name") or "").strip()
+                        if r.get("status") in ["completed", "active"] and m_name in standard_stages:
+                            idx = standard_stages.index(m_name)
+                            if idx > highest_milestone_by_pid.get(pid, (-1, ""))[0]:
+                                highest_milestone_by_pid[pid] = (idx, m_name)
+            except Exception:
+                pass
+
+        # 4. Batch Challenge-University Matches (for routed/allocated challenges)
+        routed_cids = [
+            ch["challenge_id"]
+            for ch in challenges
+            if ch.get("status") in GOVERNMENT_CATEGORY_STATUSES["allocated"]
+        ]
+        matches_by_cid = {}
+        if routed_cids:
+            try:
+                cum_res = (
+                    self.client.table("challenge_university_matches")
+                    .select("*")
+                    .in_("challenge_id", routed_cids)
+                    .order("rank", desc=False)
+                    .execute()
+                )
+                for r in (cum_res.data or []):
+                    matches_by_cid.setdefault(r["challenge_id"], []).append(r)
+            except Exception:
+                pass
+
+        # 4b. Batch Challenge-Industry Matches
+        industry_matches_by_cid = {}
+        try:
+            cim_res = (
+                self.client.table("challenge_industry_matches")
+                .select("*")
+                .in_("challenge_id", cids)
+                .order("rank", desc=False)
+                .execute()
+            )
+            for r in (cim_res.data or []):
+                industry_matches_by_cid.setdefault(r["challenge_id"], []).append(r)
+        except Exception:
+            pass
+
+        # 5. Batch University Rejections
+        rejections_by_cid = {}
+        try:
+            rej_res = (
+                self.client.table("challenge_university_matches")
+                .select("challenge_id, university_id, rejection_reason, responded_at")
+                .in_("challenge_id", cids)
+                .eq("status", "rejected")
+                .execute()
+            )
+            for r in (rej_res.data or []):
+                rejections_by_cid.setdefault(r["challenge_id"], []).append(r)
+        except Exception:
+            pass
+
+        # 6. Preload Institutions, Faculty, Industries, and University Workloads once
+        ms = MatchingService(self.client)
+        workloads = ms._fetch_university_workloads()
+        all_unis = ms._fetch_universities()
+        unis_by_id = {u["university_id"]: u for u in all_unis}
+        all_inds = ms._fetch_industries()
+        inds_by_id = {i["industry_id"]: i for i in all_inds}
+
+        # Preload faculties for attached projects
+        fac_ids = list({p["faculty_id"] for p in proj_by_cid.values() if p.get("faculty_id")})
+        facs_by_id = {}
+        if fac_ids:
+            try:
+                f_res = self.client.table("faculty").select("*").in_("faculty_id", fac_ids).execute()
+                for f in (f_res.data or []):
+                    facs_by_id[f["faculty_id"]] = f
+            except Exception:
+                pass
+
+        # 7. Hydrate items in-memory
         hydrated = []
         for ch in challenges:
             cid = ch["challenge_id"]
-
-            # AI Analysis
-            ai_data = {}
-            try:
-                ai_res = self.client.table("ai_analysis").select("*").eq("challenge_id", cid).execute()
-                if ai_res and ai_res.data:
-                    ai_data = ai_res.data[0]
-            except Exception:
-                pass
-
-            # Associated project
-            proj_data = {}
-            try:
-                p_res = self.client.table("projects").select("*").eq("challenge_id", cid).execute()
-                if p_res and p_res.data:
-                    proj_data = p_res.data[0]
-            except Exception:
-                pass
+            ai_data = ai_by_cid.get(cid, {})
+            proj_data = proj_by_cid.get(cid, {})
 
             item = {
                 "challenge_id": cid,
@@ -298,54 +545,114 @@ class GovernmentService:
 
             # Hydrate institutional names if project exists
             if proj_data:
-                if proj_data.get("university_id"):
-                    u = self._get_record_silent("universities", "university_id", proj_data["university_id"])
-                    if u:
-                        item["university_name"] = u.get("university_name")
-                if proj_data.get("faculty_id"):
-                    f = self._get_record_silent("faculty", "faculty_id", proj_data["faculty_id"])
-                    if f:
-                        item["faculty_name"] = f.get("faculty_name")
-                if proj_data.get("industry_id"):
-                    ind = self._get_record_silent("industries", "industry_id", proj_data["industry_id"])
-                    if ind:
-                        item["industry_name"] = ind.get("industry_name")
+                uid = proj_data.get("university_id")
+                fid = proj_data.get("faculty_id")
+                iid = proj_data.get("industry_id")
+                if uid and uid in unis_by_id:
+                    item["university_name"] = unis_by_id[uid].get("university_name")
+                if fid and fid in facs_by_id:
+                    item["faculty_name"] = facs_by_id[fid].get("faculty_name")
+                if iid and iid in inds_by_id:
+                    item["industry_name"] = inds_by_id[iid].get("industry_name")
 
-                # Average milestone completion
-                try:
-                    m_res = self.client.table("project_milestones").select("completion_percentage").eq("project_id", proj_data["project_id"]).execute()
-                    if m_res and m_res.data:
-                        pcts = [m.get("completion_percentage", 0) for m in m_res.data]
+                pid = proj_data.get("project_id")
+                if pid and pid in milestone_pcts_by_pid:
+                    pcts = milestone_pcts_by_pid[pid]
+                    if pcts:
                         item["milestone_progress_pct"] = round(sum(pcts) / len(pcts), 1)
-                except Exception:
-                    pass
+
+                is_completed = (
+                    proj_data.get("status") in ["deployed", "solved", "completed"]
+                    or ch.get("status") in GOVERNMENT_CATEGORY_STATUSES["solved"]
+                )
+                if is_completed:
+                    item["current_milestone"] = "Solution Deployed"
+                elif pid and pid in highest_milestone_by_pid:
+                    item["current_milestone"] = highest_milestone_by_pid[pid][1]
+                else:
+                    item["current_milestone"] = "Faculty Assigned" if fid else "University Allocated"
+
+            # Fix University Allocation Propagation:
+            # If university_name is not yet populated from proj_data, hydrate from accepted/selected matches
+            if not item.get("university_name") and cid in matches_by_cid:
+                for m in matches_by_cid[cid]:
+                    if m.get("status") in ("accepted", "selected"):
+                        uid = m.get("university_id")
+                        if uid and uid in unis_by_id:
+                            item["university_name"] = unis_by_id[uid].get("university_name")
+                            break
 
             # University rejections feedback if any
             uni_rejections = []
-            try:
-                rej_res = (
-                    self.client.table("challenge_university_matches")
-                    .select("university_id, rejection_reason, responded_at")
-                    .eq("challenge_id", cid)
-                    .eq("status", "rejected")
-                    .execute()
-                )
-                if rej_res and rej_res.data:
-                    for r in rej_res.data:
-                        u_rec = self._get_record_silent("universities", "university_id", r.get("university_id"))
-                        uni_rejections.append({
-                            "university_id": r.get("university_id"),
-                            "university_name": (u_rec or {}).get("university_name") or r.get("university_id"),
-                            "rejection_reason": r.get("rejection_reason"),
-                            "responded_at": r.get("responded_at"),
-                        })
-            except Exception:
-                pass
+            for r in rejections_by_cid.get(cid, []):
+                uid = r.get("university_id")
+                u_rec = unis_by_id.get(uid, {})
+                uni_rejections.append({
+                    "university_id": uid,
+                    "university_name": u_rec.get("university_name") or uid,
+                    "rejection_reason": r.get("rejection_reason"),
+                    "responded_at": r.get("responded_at"),
+                })
             item["university_rejections"] = uni_rejections
+
+            # Hydrate Top-5 recommended universities for government monitoring/transparency
+            top_unis = []
+            if cid in matches_by_cid:
+                raw_matches = matches_by_cid[cid][:5]
+                top_unis = ms._hydrate_university_matches(raw_matches, ch, ai_data, workloads)
+            item["top_universities"] = top_unis
+
+            # Hydrate Top-5 recommended industries and timeline status for government monitoring
+            top_inds = []
+            ind_status = "Pending"
+            raw_ind_matches = industry_matches_by_cid.get(cid, [])
+            if not raw_ind_matches and (ch.get("status") in GOVERNMENT_CATEGORY_STATUSES["allocated"] or ch.get("status") == "validated"):
+                try:
+                    raw_ind_matches = ms.get_or_generate_industry_matches(cid, limit=5)
+                except Exception:
+                    raw_ind_matches = []
+
+            for im in raw_ind_matches[:5]:
+                iid = im.get("industry_id")
+                ind_rec = inds_by_id.get(iid, {})
+                top_inds.append({
+                    "industry_id": iid,
+                    "industry_name": ind_rec.get("industry_name") or iid,
+                    "sector": ind_rec.get("sector") or ind_rec.get("domain") or "Industry Partner",
+                    "domain": ind_rec.get("domain") or ind_rec.get("sector"),
+                    "city": ind_rec.get("city"),
+                    "state": ind_rec.get("state"),
+                    "rank": im.get("rank"),
+                    "match_score": im.get("match_score"),
+                    "match_reason": im.get("match_reason"),
+                    "status": im.get("status") or "recommended",
+                    "matched_skills": ind_rec.get("specializations") or [],
+                    "matched_technologies": ind_rec.get("technologies") or [],
+                })
+
+            if any(m.get("status") == "accepted" for m in raw_ind_matches):
+                ind_status = "Accepted"
+            elif any(m.get("status") in ("sent", "invited") for m in raw_ind_matches):
+                ind_status = "Sent"
+            elif any(m.get("status") == "rejected" for m in raw_ind_matches):
+                ind_status = "Rejected"
+            elif top_inds:
+                ind_status = "Generated"
+            else:
+                ind_status = "Pending"
+
+            item["top_industries"] = top_inds
+            item["industry_matching_status"] = ind_status
 
             hydrated.append(item)
 
-        return hydrated
+        return MonitoredProblemList(
+            hydrated,
+            counts=counts,
+            total=total_matching,
+            page=page,
+            limit=limit,
+        )
 
     # -------------------------------------------------------------------------
     # 3. Assigned Faculty Roster
@@ -560,9 +867,26 @@ class GovernmentService:
             if cid:
                 ch = self._get_record_silent("challenges", "challenge_id", cid)
                 if ch:
-                    ch_doc = ch.get("document")
+                    raw_doc = ch.get("document")
+                    if raw_doc and str(raw_doc).strip() not in ["", "-", "None", "null"]:
+                        ch_doc = str(raw_doc).strip()
+
+            if not ch_doc and cid:
+                try:
+                    cim_res = self.client.table("challenge_industry_matches").select("response_note").eq("challenge_id", cid).execute()
+                    for r in (cim_res.data or []):
+                        note = r.get("response_note") or ""
+                        if "MOU_URL:" in note:
+                            ch_doc = note.split("MOU_URL:")[-1].strip()
+                            break
+                        elif note.startswith("http://") or note.startswith("https://"):
+                            ch_doc = note.strip()
+                            break
+                except Exception:
+                    pass
 
             pid = p.get("project_id")
+            has_doc = bool(ch_doc and str(ch_doc).strip() not in ["", "-", "None", "null"])
             mous.append({
                 "mou_id": f"MOU-GOV-{uni_id}-{ind_id}-{pid}",
                 "project_id": pid,
@@ -574,8 +898,8 @@ class GovernmentService:
                 "government_partner": "Government of Jharkhand — Department of Higher & Technical Education",
                 "status": "Active Collaboration" if p.get("status") in ["active", "prototype", "pilot", "deployed", "solved", "completed"] else "Initiated",
                 "effective_date": p.get("start_date") or (p.get("created_at") or "")[:10] or "In Effect",
-                "document_url": ch_doc,
-                "has_document": bool(ch_doc),
+                "document_url": resolve_document_signed_url(ch_doc) if has_doc else None,
+                "has_document": has_doc,
             })
 
         return mous
@@ -614,10 +938,10 @@ class GovernmentService:
         challenge = ch_res.data[0]
 
         current_status = challenge.get("status")
-        if current_status not in ["submitted", "validated", "under_review"]:
+        if current_status not in GOVERNMENT_CATEGORY_STATUSES["pending"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot approve challenge with status '{current_status}'. Only pending or validated challenges can be approved.",
+                detail=f"Cannot approve challenge with status '{current_status}'. Only pending challenges can be approved.",
             )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -646,6 +970,7 @@ class GovernmentService:
             "government_reviewed_by": str(user.user_id),
             "government_rejection_reason": None,
             "university_matches": matches,
+            "top_universities": matches,
         }
 
     def reject_challenge(self, challenge_id: str, reason: str, user: AuthenticatedUser) -> Dict[str, Any]:
@@ -674,7 +999,7 @@ class GovernmentService:
         challenge = ch_res.data[0]
 
         current_status = challenge.get("status")
-        if current_status in ["project_created", "in_project", "solved", "completed"]:
+        if current_status in ["project_created", "in_project", "solved", "completed", "resolved"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot reject challenge that has already reached '{current_status}'.",

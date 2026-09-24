@@ -5,26 +5,75 @@ and coordinates with AIService to persist review results into the Supabase
 challenges and ai_analysis tables.
 """
 
+import json
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from app.database import get_supabase
-from app.services.ai_service import AIService
+from app.services.ai_service import AIService, compute_jaccard_similarity, compute_multi_signal_similarity
 from app.services.auth_service import AuthenticatedUser
 from app.services.project_workflow_service import ProjectWorkflowService
+
+logger = logging.getLogger("challenge_service")
 
 
 class ChallengeService:
     """Service managing challenge submissions, state transitions, and AI review workflows."""
 
     def __init__(self, ai_service: Optional[AIService] = None, client=None):
+        if ai_service is not None and not isinstance(ai_service, AIService) and hasattr(ai_service, "table"):
+            client = ai_service
+            ai_service = None
         self.ai_service = ai_service or AIService()
         self._client = client
 
     @property
     def client(self):
         return self._client if self._client is not None else get_supabase()
+
+    def _unpack_ai_analysis(self, analysis: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Unpacks the namespaced Call 1 evidence envelope stored in similar_challenges."""
+        if not analysis or not isinstance(analysis, dict):
+            return analysis
+        res = dict(analysis)
+        sim_raw = res.get("similar_challenges")
+        if sim_raw and isinstance(sim_raw, str):
+            try:
+                parsed = json.loads(sim_raw)
+                if isinstance(parsed, dict) and parsed.get("schema_version") == 1:
+                    obj = parsed.get("objective_evidence") or {}
+                    for k, v in obj.items():
+                        if k not in res or res[k] is None:
+                            res[k] = v
+                    if "validity_raw" in obj and obj["validity_raw"]:
+                        res["validity"] = obj["validity_raw"]
+                        res["validity_raw"] = obj["validity_raw"]
+                    if "innovation_scope_raw" in obj and obj["innovation_scope_raw"]:
+                        res["innovation_scope"] = obj["innovation_scope_raw"]
+                        res["innovation_scope_raw"] = obj["innovation_scope_raw"]
+                    img = parsed.get("image_evidence") or {}
+                    if "image_evidence_status" not in res:
+                        res["image_evidence_status"] = img.get("status")
+                        res["image_evidence_confidence"] = img.get("confidence")
+                        res["image_observations"] = img.get("observations")
+                    ext = parsed.get("external_search") or {}
+                    if "external_search_status" not in res:
+                        res["external_search_status"] = ext.get("search_status")
+                        res["existing_solution_found"] = ext.get("existing_solution_found")
+                    internal = parsed.get("internal_search") or {}
+                    if "internal_search_status" not in res:
+                        res["internal_search_status"] = internal.get("search_status")
+                    if "internal_solutions" not in res:
+                        res["internal_solutions"] = internal.get("solutions", [])
+                    if "solutions" not in res:
+                        res["solutions"] = internal.get("solutions", []) + ext.get("solutions", [])
+                    res["candidate_relationships"] = parsed.get("similar_challenges", [])
+                    res["similar_challenges_list"] = parsed.get("similar_challenges", [])
+            except Exception:
+                pass
+        return res
 
 
     # -------------------------------------------------------------------------
@@ -121,7 +170,8 @@ class ChallengeService:
                 .eq("challenge_id", challenge_id)
                 .execute()
             )
-            challenge["ai_analysis"] = analysis_res.data[0] if analysis_res.data else None
+            raw_ai = analysis_res.data[0] if analysis_res.data else None
+            challenge["ai_analysis"] = self._unpack_ai_analysis(raw_ai)
         except Exception:
             challenge["ai_analysis"] = None
 
@@ -334,7 +384,7 @@ class ChallengeService:
         try:
             ai_res = self.client.table("ai_analysis").select("*").in_("challenge_id", challenge_ids).execute()
             for a in (ai_res.data or []):
-                ai_map[a["challenge_id"]] = a
+                ai_map[a["challenge_id"]] = self._unpack_ai_analysis(a)
         except Exception:
             pass
 
@@ -507,6 +557,231 @@ class ChallengeService:
             return []
 
     # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Targeted Candidate Retrieval (VidySetu Solutions + Challenges)
+    # -------------------------------------------------------------------------
+    def retrieve_targeted_candidates(
+        self, challenge: Dict[str, Any], limit: int = 15
+    ) -> List[Dict[str, Any]]:
+        """Retrieves bounded set of completed VidySetu projects and relevant challenges for Call 1 relationship analysis.
+
+        Prioritizes:
+        1. Completed/deployed VidySetu projects (joined with solved challenges, universities, industries, and milestone evidence).
+        2. Relevant challenges in the same district/city or same category.
+        3. Active and resolved challenges scored deterministically via multi-signal similarity.
+        """
+        curr_cid = challenge.get("challenge_id")
+        curr_title = (challenge.get("title") or "").strip()
+        curr_desc = (challenge.get("description") or "").strip()
+        curr_dist = (challenge.get("district") or challenge.get("city") or "").strip()
+        curr_cat = (challenge.get("category") or "").strip()
+
+        candidates: List[Dict[str, Any]] = []
+        seen_cids: Set[str] = set()
+        if curr_cid:
+            seen_cids.add(curr_cid)
+
+        # 1. Retrieve completed or deployed VidySetu projects
+        try:
+            p_res = (
+                self.client.table("projects")
+                .select("project_id, challenge_id, project_title, description, status, university_id, industry_id, faculty_id")
+                .in_("status", ["completed", "deployed"])
+                .limit(50)
+                .execute()
+            )
+            raw_projects = p_res.data or []
+            if raw_projects:
+                proj_cids = [p["challenge_id"] for p in raw_projects if p.get("challenge_id")]
+                u_ids = list({p["university_id"] for p in raw_projects if p.get("university_id")})
+                i_ids = list({p["industry_id"] for p in raw_projects if p.get("industry_id")})
+                p_ids = [p["project_id"] for p in raw_projects if p.get("project_id")]
+
+                # Batch hydrate challenge info including location and category
+                ch_map: Dict[str, Any] = {}
+                if proj_cids:
+                    try:
+                        c_res = (
+                            self.client.table("challenges")
+                            .select("challenge_id, title, description, status, city, district, location")
+                            .in_("challenge_id", proj_cids)
+                            .execute()
+                        )
+                        ch_map = {c["challenge_id"]: c for c in (c_res.data or [])}
+                    except Exception:
+                        pass
+
+                # Batch hydrate universities
+                u_map: Dict[str, str] = {}
+                if u_ids:
+                    try:
+                        u_res = (
+                            self.client.table("universities")
+                            .select("university_id, university_name")
+                            .in_("university_id", u_ids)
+                            .execute()
+                        )
+                        u_map = {row["university_id"]: row.get("university_name") for row in (u_res.data or [])}
+                    except Exception:
+                        pass
+
+                # Batch hydrate industries
+                i_map: Dict[str, str] = {}
+                if i_ids:
+                    try:
+                        i_res = (
+                            self.client.table("industries")
+                            .select("industry_id, industry_name")
+                            .in_("industry_id", i_ids)
+                            .execute()
+                        )
+                        i_map = {row["industry_id"]: row.get("industry_name") for row in (i_res.data or [])}
+                    except Exception:
+                        pass
+
+                # Batch hydrate milestone evidence and milestones
+                ev_map: Dict[str, str] = {}
+                p_milestones_map: Dict[str, List[Dict[str, Any]]] = {}
+                if p_ids:
+                    try:
+                        m_res = (
+                            self.client.table("project_milestones")
+                            .select("project_id, milestone_name, status, completion_percentage, evidence_url")
+                            .in_("project_id", p_ids)
+                            .order("deadline", desc=False)
+                            .execute()
+                        )
+                        for m in (m_res.data or []):
+                            pid_m = m.get("project_id")
+                            if pid_m:
+                                if pid_m not in p_milestones_map:
+                                    p_milestones_map[pid_m] = []
+                                p_milestones_map[pid_m].append({
+                                    "name": m.get("milestone_name") or "Milestone",
+                                    "status": m.get("status") or "completed",
+                                    "completion_percentage": m.get("completion_percentage", 100),
+                                    "evidence_url": m.get("evidence_url"),
+                                })
+                                if m.get("evidence_url") and pid_m not in ev_map:
+                                    ev_map[pid_m] = m.get("evidence_url")
+                    except Exception:
+                        pass
+
+                for p in raw_projects:
+                    c_info = ch_map.get(p.get("challenge_id")) or {}
+                    p_title = p.get("project_title") or c_info.get("title") or "Applied Solution"
+                    p_desc = p.get("description") or c_info.get("description") or ""
+
+                    cand = {
+                        "challenge_id": p.get("challenge_id") or f"CHL-PRJ-{p['project_id']}",
+                        "project_id": p.get("project_id"),
+                        "title": p_title,
+                        "description": p_desc,
+                        "source": "vidysetu_project",
+                        "status": p.get("status") or "completed",
+                        "university_name": u_map.get(p.get("university_id")),
+                        "industry_name": i_map.get(p.get("industry_id")),
+                        "evidence_url": ev_map.get(p.get("project_id")),
+                        "city": c_info.get("city"),
+                        "district": c_info.get("district"),
+                        "location": c_info.get("location"),
+                        "category": c_info.get("category"),
+                        "solved_problem_title": c_info.get("title") or p_title,
+                        "milestones": p_milestones_map.get(p.get("project_id"), []),
+                    }
+                    multi_sig = compute_multi_signal_similarity(challenge, cand)
+                    cand["similarity_score"] = multi_sig["composite_score"]
+                    cand["multi_signal"] = multi_sig
+                    candidates.append(cand)
+
+                    # Mark challenge_id as covered by project
+                    if p.get("challenge_id"):
+                        seen_cids.add(p["challenge_id"])
+        except Exception as e:
+            logger.warning(f"Error querying completed projects for candidate retrieval: {e}")
+
+        # 2. Retrieve existing challenges with multi-factor targeting (location, category, general pool)
+        ch_raw_candidates: List[Dict[str, Any]] = []
+
+        # A. Same District / City match
+        if curr_dist:
+            try:
+                q_loc = self.client.table("challenges").select("challenge_id, title, description, status, location, city, district")
+                if curr_cid:
+                    q_loc = q_loc.neq("challenge_id", curr_cid)
+                q_loc = q_loc.ilike("district", f"%{curr_dist}%").limit(50)
+                loc_res = q_loc.execute()
+                for c in (loc_res.data or []):
+                    if c["challenge_id"] not in seen_cids:
+                        seen_cids.add(c["challenge_id"])
+                        ch_raw_candidates.append(c)
+            except Exception as e:
+                logger.warning(f"Error fetching district candidates: {e}")
+
+        # B. Same Category match from ai_analysis
+        if curr_cat:
+            try:
+                ai_cat_res = self.client.table("ai_analysis").select("challenge_id").ilike("category", f"%{curr_cat}%").limit(50).execute()
+                cat_cids = [r["challenge_id"] for r in (ai_cat_res.data or []) if r.get("challenge_id") and r["challenge_id"] not in seen_cids]
+                if cat_cids:
+                    q_cat = self.client.table("challenges").select("challenge_id, title, description, status, location, city, district").in_("challenge_id", cat_cids)
+                    if curr_cid:
+                        q_cat = q_cat.neq("challenge_id", curr_cid)
+                    cat_res = q_cat.execute()
+                    for c in (cat_res.data or []):
+                        if c["challenge_id"] not in seen_cids:
+                            seen_cids.add(c["challenge_id"])
+                            ch_raw_candidates.append(c)
+            except Exception as e:
+                logger.warning(f"Error fetching category candidates: {e}")
+
+        # C. General recent challenge pool
+        try:
+            q_all = self.client.table("challenges").select("challenge_id, title, description, status, location, city, district")
+            if curr_cid:
+                q_all = q_all.neq("challenge_id", curr_cid)
+            all_res = q_all.order("created_at", desc=True).limit(100).execute()
+            for c in (all_res.data or []):
+                if c["challenge_id"] not in seen_cids:
+                    seen_cids.add(c["challenge_id"])
+                    ch_raw_candidates.append(c)
+        except Exception as e:
+            logger.warning(f"Error fetching general challenge pool: {e}")
+
+        # Batch hydrate category from ai_analysis
+        cat_lookup: Dict[str, str] = {}
+        if ch_raw_candidates:
+            all_raw_cids = [c["challenge_id"] for c in ch_raw_candidates]
+            try:
+                ai_cat_batch = self.client.table("ai_analysis").select("challenge_id, category").in_("challenge_id", all_raw_cids).execute()
+                cat_lookup = {r["challenge_id"]: r.get("category") for r in (ai_cat_batch.data or [])}
+            except Exception:
+                pass
+
+        # Score all retrieved challenges using multi-signal similarity
+        for c in ch_raw_candidates:
+            cand = {
+                "challenge_id": c["challenge_id"],
+                "project_id": None,
+                "title": c.get("title") or "",
+                "description": c.get("description") or "",
+                "source": "vidysetu_challenge",
+                "status": c.get("status"),
+                "city": c.get("city"),
+                "district": c.get("district"),
+                "location": c.get("location") or c.get("city"),
+                "category": cat_lookup.get(c["challenge_id"]),
+            }
+            multi_sig = compute_multi_signal_similarity(challenge, cand)
+            cand["similarity_score"] = multi_sig["composite_score"]
+            cand["multi_signal"] = multi_sig
+            candidates.append(cand)
+
+        # 3. Sort candidates by multi-signal similarity_score descending and return Top limit
+        candidates.sort(key=lambda x: x.get("similarity_score", 0.0), reverse=True)
+        return candidates[:limit]
+
+    # -------------------------------------------------------------------------
     # 2. AI Review & Existing-Solution Discovery (Call 1)
     # -------------------------------------------------------------------------
     def analyze_challenge(
@@ -547,13 +822,8 @@ class ChallengeService:
                 "message": "Challenge has already completed Call 1 analysis.",
             }
 
-        # Fetch candidate challenges for duplicate detection
-        existing_candidates = []
-        try:
-            cand_res = self.client.table("challenges").select("challenge_id,title,description").neq("challenge_id", challenge_id).limit(15).execute()
-            existing_candidates = cand_res.data or []
-        except Exception:
-            existing_candidates = []
+        # Targeted Candidate Retrieval (Part 1 & 2): Solved projects + relevant challenges
+        existing_candidates = self.retrieve_targeted_candidates(challenge, limit=10)
 
         # Run Call 1 via AIService
         call_1_result = self.ai_service.analyze_call_1(challenge, existing_challenges=existing_candidates)
@@ -589,53 +859,101 @@ class ChallengeService:
                 .execute()
             )
             saved_analysis = persisted.data[0] if persisted.data else analysis_data
-        except Exception:
-            saved_analysis = analysis_data
+        except Exception as e:
+            logger.error(f"Failed to persist ai_analysis for challenge {challenge_id}: {e}", exc_info=True)
+            raise
 
-        # Determine status transitions adhering strictly to User Clarifications:
-        # Clarification #3:
-        # Ineligible -> rejected
-        # Uncertain -> clarification
-        # Eligible + no solution -> validated
-        # Image mismatch -> image_mismatch (prompt better evidence, do NOT permanently reject)
-        # Solution found -> existing_solution_found
+        # Determine status transitions adhering strictly to User Clarifications & Phase LLM-1 rules:
+        # Ineligible / Innovation Scope None / University Not Suitable -> rejected
+        # Uncertain -> uncertain_eligibility (Never sent to Government)
+        # Image mismatch -> image_mismatch (Never sent to Government)
+        # Existing solution found -> existing_solution_found
+        # Search failed -> uncertain_solution_search (Never sent to Government)
+        # Search succeeded with no solution found -> validated
         validity = call_1_result.get("validity", "valid")
+        raw_innovation = call_1_result.get("innovation_scope_raw") or call_1_result.get("innovation_scope")
+        uni_suitable = call_1_result.get("university_suitable")
         solution_found = call_1_result.get("solution_found", False)
+        existing_solution_found = call_1_result.get("existing_solution_found")
+        search_status = call_1_result.get("external_search_status", "not_searched")
         img_status = call_1_result.get("image_evidence_status")
+        duplicate_group = call_1_result.get("duplicate_group")
 
-        if validity == "invalid":
+        has_existing_sol = (
+            solution_found
+            or existing_solution_found is True
+            or bool(call_1_result.get("internal_solutions"))
+        )
+
+        if validity in ("ineligible", "invalid") or raw_innovation == "none" or uni_suitable is False:
             new_status = "rejected"
-            action_msg = "Problem flagged as ineligible or safety concern."
+            action_msg = "Problem flagged as routine municipal maintenance, ineligible, or non-innovation."
+        elif has_existing_sol:
+            new_status = "existing_solution_found"
+            action_msg = "Existing verified solution discovered. Awaiting citizen confirmation."
+        elif duplicate_group:
+            new_status = "duplicate_detected"
+            action_msg = "A strongly similar challenge already exists in your area. Awaiting citizen confirmation via Duplicate Gate."
         elif validity == "uncertain":
             new_status = "uncertain_eligibility"
             action_msg = "Problem statement requires further clarification."
         elif img_status == "mismatch":
             new_status = "image_mismatch"
             action_msg = "Uploaded image does not appear to match the problem description. Please upload clearer evidence."
-        elif solution_found:
-            new_status = "existing_solution_found"
-            action_msg = "Existing verified solution discovered. Awaiting citizen confirmation."
+        elif search_status == "search_failed":
+            new_status = "uncertain_solution_search"
+            action_msg = "External solution search failed or offline. Challenge pending verification."
+        elif search_status == "searched" and existing_solution_found is False:
+            new_status = "validated"
+            action_msg = "No existing solution found via search grounding. Challenge classified and validated for matching."
         else:
             new_status = "validated"
-            action_msg = "No existing solution found. Challenge classified and validated for matching."
+            action_msg = "Challenge classified and validated."
 
         try:
             self.client.table("challenges").update({"status": new_status}).eq("challenge_id", challenge_id).execute()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to update status for challenge {challenge_id} to '{new_status}': {e}", exc_info=True)
+            raise
+
+        unpacked_analysis = self._unpack_ai_analysis(dict(saved_analysis))
 
         return {
             "challenge_id": challenge_id,
             "status": new_status,
             "action_taken": "call_1_completed",
             "llm_calls_made": 1,
-            "solution_found": solution_found,
+            "solution_found": bool(existing_solution_found) if existing_solution_found is not None else solution_found,
+            "existing_solution_found": existing_solution_found,
             "existing_solution": call_1_result.get("existing_solution"),
             "solution_gap_valid": call_1_result.get("solution_gap_valid"),
-            "analysis": saved_analysis,
+            "analysis": unpacked_analysis,
+            "provider_used": call_1_result.get("provider_used", "backend"),
+            "provider_failure_reason": call_1_result.get("provider_failure_reason"),
             "search_grounding_used": call_1_result.get("search_grounding_used", False),
+            "external_search_status": search_status,
             "image_evidence_status": img_status,
+            "image_observations": call_1_result.get("image_observations", []),
             "solutions": call_1_result.get("solutions", []),
+            "duplicate_group": call_1_result.get("duplicate_group"),
+            "duplicate_candidates": [
+                cand.model_dump() if hasattr(cand, "model_dump") else cand
+                for cand in call_1_result.get("duplicate_candidates", [])
+            ],
+            "candidate_relationships": call_1_result.get("candidate_relationships", []),
+            "similar_challenges_list": unpacked_analysis.get("similar_challenges_list", []),
+            "internal_search_status": call_1_result.get("internal_search_status", "searched"),
+            "internal_solutions": call_1_result.get("internal_solutions", []),
+            "objective_evidence": {
+                "secondary_categories": call_1_result.get("secondary_categories", []),
+                "severity_level": call_1_result.get("severity_level"),
+                "population_scale": call_1_result.get("population_scale"),
+                "life_safety_threat": call_1_result.get("life_safety_threat"),
+                "essential_service_disrupted": call_1_result.get("essential_service_disrupted"),
+                "priority_evidence": call_1_result.get("priority_evidence"),
+                "university_suitable": call_1_result.get("university_suitable"),
+                "university_suitability_reason": call_1_result.get("university_suitability_reason"),
+            },
             "message": action_msg,
         }
 
@@ -731,13 +1049,13 @@ class ChallengeService:
 
         if gap_status == "VALID_GAP":
             new_status = "validated"
-            msg = "Gap validation complete. Problem validated and classified for university/industry matching."
+            msg = "Gap validation complete. Problem validated and routed for Government approval."
         elif gap_status == "UNCERTAIN_GAP":
             new_status = "gap_uncertain"
             msg = "Gap validation uncertain. Additional clarification required."
         else:
             new_status = "gap_invalid"
-            msg = "Gap validation concluded that the existing solution is sufficient; reason provided was not valid."
+            msg = "The provided difference does not establish a sufficient unmet need for a new project."
 
         update_data = {
             "solution_gap": call_2_result.get("solution_gap"),
@@ -772,6 +1090,145 @@ class ChallengeService:
             "analysis": {**existing_analysis, **update_data},
             "message": msg,
         }
+
+    # -------------------------------------------------------------------------
+    # 4. Duplicate Gate Response & Gap Validation
+    # -------------------------------------------------------------------------
+    def handle_duplicate_response(
+        self,
+        challenge_id: str,
+        user: AuthenticatedUser,
+        action: str,
+        existing_challenge_id: Optional[str] = None,
+        gap_reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Handles citizen response to the Citizen Duplicate Gate.
+
+        Actions:
+        - 'support_existing': citizen acknowledges existing problem/solution, upvotes existing challenge,
+          and merges current challenge (new_status = 'duplicate_merged').
+        - 'claim_different': citizen claims their problem has a distinct gap. Triggers Call 2 gap validation.
+          If valid gap -> new_status = 'validated'.
+          If invalid gap -> new_status = 'duplicate_confirmed'.
+          If uncertain -> new_status = 'gap_uncertain'.
+        """
+        challenge = self.get_challenge(challenge_id)
+        self._verify_ownership(challenge, user)
+
+        current_status = challenge.get("status")
+        existing_analysis = challenge.get("ai_analysis") or {}
+
+        if current_status not in ["duplicate_detected", "submitted", "uncertain_eligibility", "existing_solution_found"]:
+            if current_status in ["duplicate_merged", "duplicate_confirmed", "validated"]:
+                return {
+                    "challenge_id": challenge_id,
+                    "status": current_status,
+                    "action_taken": f"already_{current_status}",
+                    "message": f"Challenge is already in status '{current_status}'.",
+                }
+
+        target_cid = existing_challenge_id or existing_analysis.get("duplicate_group")
+
+        if action == "support_existing":
+            # 1. Citizen supports / upvotes the existing challenge
+            if target_cid:
+                try:
+                    self.vote_challenge(target_cid, user)
+                except Exception as e:
+                    logger.info(f"Vote for existing challenge {target_cid} note: {e}")
+
+            new_status = "duplicate_merged"
+            note = f"Citizen supported existing challenge {target_cid or 'candidate'}. Submission merged."
+
+            try:
+                self.client.table("challenges").update({"status": new_status}).eq("challenge_id", challenge_id).execute()
+                self.client.table("ai_analysis").update({
+                    "solution_gap": note,
+                    "solution_gap_valid": False,
+                }).eq("challenge_id", challenge_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to update challenge {challenge_id} to duplicate_merged: {e}")
+
+            return {
+                "challenge_id": challenge_id,
+                "status": new_status,
+                "action_taken": "duplicate_merged",
+                "target_challenge_id": target_cid,
+                "message": "Thank you for supporting the existing challenge! Your endorsement has been counted.",
+            }
+
+        elif action == "claim_different":
+            if not gap_reason or not gap_reason.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Please explain how your problem is different or what gap exists in the existing problem.",
+                )
+
+            # Retrieve existing challenge details to frame the gap check
+            ref_text = "Existing Civic Problem Statement"
+            if target_cid:
+                try:
+                    target_ch = self.get_challenge(target_cid)
+                    ref_text = f"{target_ch.get('title', '')}: {target_ch.get('description', '')}".strip()
+                except Exception:
+                    pass
+
+            # Run Call 2 gap validation
+            call_2_result = self.ai_service.analyze_call_2_gap_validation(
+                challenge=challenge,
+                existing_solution=ref_text,
+                rejection_reason=gap_reason.strip(),
+            )
+
+            gap_status = call_2_result.get("gap_status", "VALID_GAP")
+            is_gap_valid = call_2_result.get("solution_gap_valid", False)
+
+            if gap_status == "VALID_GAP":
+                new_status = "validated"
+                msg = "Gap validated. Your distinct problem has been approved for university and industry matching!"
+            elif gap_status == "UNCERTAIN_GAP":
+                new_status = "gap_uncertain"
+                msg = "The difference provided requires further clarification."
+            else:
+                new_status = "duplicate_confirmed"
+                msg = "Review concluded that this issue is already covered by the existing challenge."
+
+            update_data = {
+                "solution_gap": call_2_result.get("solution_gap") or gap_reason.strip(),
+                "solution_gap_valid": is_gap_valid,
+                "ai_summary": call_2_result.get("ai_summary"),
+                "category": call_2_result.get("category"),
+                "subcategory": call_2_result.get("subcategory"),
+                "required_skills": call_2_result.get("required_skills"),
+                "required_technologies": call_2_result.get("required_technologies"),
+                "severity": call_2_result.get("severity"),
+                "priority": call_2_result.get("priority"),
+                "innovation_scope": call_2_result.get("innovation_scope"),
+                "feasibility": call_2_result.get("feasibility"),
+                "confidence_score": call_2_result.get("confidence_score"),
+            }
+
+            try:
+                self.client.table("ai_analysis").update(update_data).eq("challenge_id", challenge_id).execute()
+                self.client.table("challenges").update({"status": new_status}).eq("challenge_id", challenge_id).execute()
+            except Exception:
+                pass
+
+            return {
+                "challenge_id": challenge_id,
+                "status": new_status,
+                "action_taken": "duplicate_gap_evaluated",
+                "gap_status": gap_status,
+                "solution_gap_valid": is_gap_valid,
+                "analysis": {**existing_analysis, **update_data},
+                "message": msg,
+            }
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown duplicate response action '{action}'. Must be 'support_existing' or 'claim_different'.",
+            )
 
     # -------------------------------------------------------------------------
     # Helper: Ownership Verification

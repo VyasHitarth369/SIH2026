@@ -15,11 +15,18 @@ function adaptSupabaseChallenge(ch) {
   const facName = ch.faculty_name || proj?.faculty_name || null;
   const indName = ch.industry_name || proj?.industry_name || null;
 
+  const isSolved =
+    ['resolved', 'solved', 'completed', 'deployed', 'accepted_existing_solution'].includes(ch.status) ||
+    ['deployed', 'solved', 'completed'].includes(proj?.status) ||
+    ch.current_milestone === 'Solution Deployed' ||
+    proj?.current_milestone === 'Solution Deployed';
+
   return {
     id: ch.challenge_id || ch.id,
-    type: ch.status === 'solved' ? 'solved' : 'unsolved',
+    type: isSolved ? 'solved' : 'unsolved',
     status: ch.status || 'submitted',
-    current_milestone: ch.current_milestone || proj?.current_milestone || null,
+    project_status: proj?.status,
+    current_milestone: ch.current_milestone || proj?.current_milestone || (isSolved ? 'Solution Deployed' : null),
     votes: 1,
     source: ch.submitted_by === 'government' ? 'government' : ch.submitted_by === 'industry' ? 'industry' : 'citizen',
     submissionDate: ch.created_at ? ch.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
@@ -114,6 +121,9 @@ export function ProblemsProvider({ children }) {
 
   // Load real challenges from FastAPI / Supabase backend on mount
   useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/demo')) {
+      return;
+    }
     let isMounted = true;
     async function loadBackendChallenges() {
       try {

@@ -257,10 +257,28 @@ class MockQueryBuilder:
         self._limit_val = count
         return self
 
+    def range(self, start: int, end: int):
+        return self
+
+    def in_(self, field: str, values: Any):
+        self.filters.append(("in", field, values))
+        return self
+
+    def neq(self, field: str, value: Any):
+        self.filters.append(("neq", field, value))
+        return self
+
     def _matches(self, row: Dict[str, Any]) -> bool:
         for f_type, field, val in self.filters:
             if f_type == "eq":
                 if str(row.get(field)) != str(val):
+                    return False
+            elif f_type == "neq":
+                if str(row.get(field)) == str(val):
+                    return False
+            elif f_type == "in":
+                vals = [str(v) for v in val] if isinstance(val, (list, tuple, set)) else [str(val)]
+                if str(row.get(field)) not in vals:
                     return False
         return True
 
